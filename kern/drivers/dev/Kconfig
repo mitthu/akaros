@@ -19,3 +19,10 @@ config DEVVARS_TEST
 	  Have #vars include a collection of test files that devvars utest
 	  uses.  Say 'y' if you plan to use the utest, at the expense of having
 	  a cluttered #vars.
+
+config DEVDUMMY
+	bool "#dummy device for kernel developers"
+	default n
+	help
+	  The #dummy device can be used as a starting point for a new device. It
+	  contains bootstrap code for a bare-bone device driver.
