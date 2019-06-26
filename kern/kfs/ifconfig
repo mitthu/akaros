@@ -3,6 +3,9 @@
 /bin/bind -b '#cons' /dev
 /bin/bind -b '#pci' /dev
 
+mkdir /cbdma
+/bin/bind -b '#cbdma' /cbdma
+
 NIC=0
 while true; do
 	cat "#ether.$NIC" 2>&1 > /dev/null
