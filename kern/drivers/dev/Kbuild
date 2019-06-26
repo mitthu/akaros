@@ -22,3 +22,4 @@ obj-y						+= srv.o
 obj-y						+= tmpfs.o
 obj-y						+= version.o
 obj-$(CONFIG_DEVVARS)				+= vars.o
+obj-$(CONFIG_DEVDUMMY)				+= dummy.o
