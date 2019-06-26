@@ -1,6 +1,7 @@
 #!/bin/ash
 
 /bin/bind -b '#cons' /dev
+/bin/bind -b '#pci' /dev
 
 NIC=0
 while true; do
