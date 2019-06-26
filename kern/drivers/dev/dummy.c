@@ -3,18 +3,9 @@
  * Author: Aditya Basu <mitthu@google.com>
  */
 
-#include <slab.h>
-#include <kmalloc.h>
-#include <kref.h>
-#include <string.h>
 #include <stdio.h>
-#include <assert.h>
 #include <error.h>
-#include <cpio.h>
-#include <pmap.h>
-#include <smp.h>
 #include <net/ip.h>
-#include <arch/io.h>
 
 #define DEBUG
 
@@ -106,7 +97,7 @@ static size_t dummyread(struct chan *c, void *va, size_t n, off64_t offset) {
                                   ARRAY_SIZE(dummydirdir), devgen);
 
         case Qdummyafile:
-                error(EPERM, "reading not implemented for: afile");
+                return readstr(offset, va, n, "This is afile!\n");
 
         case Qdummysomefile:
                 error(EPERM, "reading not yet implemented for: somefile");
