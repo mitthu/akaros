@@ -5,6 +5,15 @@
 #ifndef _IOAT_REGISTERS_H_
 #define _IOAT_REGISTERS_H_
 
+/* file: drivers/dma/ioat/hw.h */
+#define IOAT_VER_1_2            0x12    /* Version 1.2 */
+#define IOAT_VER_2_0            0x20    /* Version 2.0 */
+#define IOAT_VER_3_0            0x30    /* Version 3.0 */
+#define IOAT_VER_3_2            0x32    /* Version 3.2 */
+#define IOAT_VER_3_3            0x33    /* Version 3.3 */
+#define IOAT_VER_3_4		0x34	/* Version 3.4 */
+/* -------------------------------------- */
+
 #define IOAT_PCI_DMACTRL_OFFSET			0x48
 #define IOAT_PCI_DMACTRL_DMA_EN			0x00000001
 #define IOAT_PCI_DMACTRL_MSI_EN			0x00000002
@@ -235,9 +244,17 @@
 #define IOAT_CHANERR_MASK_OFFSET		0x2C	/* 32-bit Channel Error Register */
 
 /* Extras. Added by Aditya Basu <mitthu@google.com> */
-#define IOAT_CHANSTS_0_OFFSET  	 			0x88
-#define IOAT_CHAINADDR_0_OFFSET	 			0x90
-#define IOAT_DESC_CTRL_INTR_ON_COMPLETION           	0x00000001
-#define IOAT_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION  	0x00000008
+#define CBDMA_CHANCNT_OFFSET  	 			0x0
+#define CBDMA_CHANCMD_OFFSET  	 			0x84
+#define CBDMA_CHANSTS_OFFSET  	 			0x88
+#define CBDMA_CHANCTRL_OFFSET  	 			0x80
+#define CBDMA_DMACOUNT_OFFSET				0x86    /* 16-bit DMA Count register */
+#define CBDMA_CHAINADDR_OFFSET	 			0x90
+#define CBDMA_CHANCMP_OFFSET	 			0x98
+#define CBDMA_CHANERR_OFFSET  	 			0xa8
+#define CBDMA_DESC_CTRL_INTR_ON_COMPLETION           	0x00000001
+#define CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION  	0x00000008
+
+#define IOAT_CHANSTS_ARMED 0x4
 
 #endif /* _IOAT_REGISTERS_H_ */
