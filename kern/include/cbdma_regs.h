@@ -234,4 +234,10 @@
 
 #define IOAT_CHANERR_MASK_OFFSET		0x2C	/* 32-bit Channel Error Register */
 
+/* Extras. Added by Aditya Basu <mitthu@google.com> */
+#define IOAT_CHANSTS_0_OFFSET  	 			0x88
+#define IOAT_CHAINADDR_0_OFFSET	 			0x90
+#define IOAT_DESC_CTRL_INTR_ON_COMPLETION           	0x00000001
+#define IOAT_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION  	0x00000008
+
 #endif /* _IOAT_REGISTERS_H_ */

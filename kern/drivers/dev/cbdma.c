@@ -11,12 +11,14 @@
 #include <net/ip.h>
 #include <linux_compat.h>
 #include <arch/pci.h>
+#include <page_alloc.h>
+#include <pmap.h>
 #include <cbdma_regs.h>
 
-struct dev                      cbdmadevtab;
-static struct pci_device        *pci;
-static char                     *mmio;
-static uint32_t                 mmio_sz;
+struct dev                cbdmadevtab;
+static struct pci_device  *pci;
+static char               *mmio;
+static uint32_t           mmio_sz;
 /* QID Path */
 enum {
         Qdir           = 0,
@@ -82,15 +84,55 @@ static void cbdmaclose(struct chan *_) {
    
  - Allocates 2 kernel pages: src and dest.
  - memsets the src page
- - Prepare descriptors for DMA transfer
+ - Prepare descriptors for DMA transfer (need to be aligned)
  - Initiate the transfer
  - Verify results
  - Print stats
  */ 
 static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
-        char *str = "Not implemented yet!\n";
+        char *src;
+        char *dst;
+        const int size = 1024;
 
-        return readstr(offset, va, n, str);
+        char *desc_page;
+        uint64_t desc_page_paddr;
+        struct desc *d;
+
+        /* allocate src & dst buffers and initialize with different values */
+        src = kmalloc(size, MEM_WAIT);
+        dst = kmalloc(size, MEM_WAIT);
+        memset(src, 0x0F, size);
+        memset(dst, 0x00, size);
+
+        printk(KERN_INFO "src:%x dst:%x\n", src, dst);
+
+        /* allocate pages for descriptors, last 6-bits must be zero */
+        desc_page = kpage_alloc_addr();
+        memset(desc_page, 0x0, PGSIZE);
+
+        desc_page_paddr = (uint64_t) PADDR(desc_page);
+        assert((desc_page_paddr & 0x3F) == 0);
+
+        printk(KERN_INFO "desc_page:%x desc_page_paddr:%x\n", desc_page, desc_page_paddr);
+
+        /* preparing descriptors */
+        d = (struct desc *) desc_page;
+        d->next_desc_addr       = (uint64_t) d + sizeof(struct desc);
+        d->xfer_size            = (uint32_t) size;
+        d->src_addr             = (uint64_t) src;
+        d->dest_addr            = (uint64_t) dst;
+        d->descriptor_control   = IOAT_DESC_CTRL_INTR_ON_COMPLETION |
+                                  IOAT_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
+
+        /* initiate transfer */
+        ;
+
+kpage_free:
+        /* TODO: free the kpage */
+kmalloc_free:
+        kfree(dst);
+        kfree(src);
+        return 0;
 }
 
 /* cbdma_stats: some stats about the driver
@@ -102,7 +144,6 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
 
         iter = seprintf(iter, ebuf, "Intel CBDM [%x:%x] mmio:%x mmio_sz:%lu",
                         pci->ven_id, pci->dev_id, mmio, mmio_sz);
-
         *iter++ = '\n';
         *iter   = '\0';
         return readstr(offset, va, n, buf);
@@ -128,9 +169,21 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
 }
 
 static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
-        panic("Not implemented yet!");
+        switch (c->qid.path) {
+        case Qdir:
+                error(EPERM, "writing not permitted");
 
-        return 0;
+        case Qcbdmaktest:
+                error(EPERM, "writing not permitted");
+
+        case Qcbdmastats:
+                error(EPERM, "writing not permitted");
+
+        default:
+                panic("cbdmawrite: qid 0x%x is impossible", c->qid.path);
+        }
+
+        return -1;      /* not reached */
 }
 
 void cbdmainit(void) {
@@ -160,7 +213,8 @@ void cbdmainit(void) {
                 error(EINVAL, "Cannot register Intel CBDMA\n");                
         }
 
-        printk(KERN_INFO "Registered: Intel CBDM [%x:%x] mmio:%x mmio_sz:%lu\n",
+        printk(KERN_INFO
+                "Registered: Intel CBDM [%x:%x] mmio:%x mmio_sz:%lu\n",
                 pci->ven_id, pci->dev_id, mmio, mmio_sz);
 }
 
