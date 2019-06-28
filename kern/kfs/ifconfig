@@ -5,6 +5,7 @@
 
 mkdir /cbdma
 /bin/bind -b '#cbdma' /cbdma
+cat /cbdma/stats
 
 NIC=0
 while true; do

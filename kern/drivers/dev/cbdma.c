@@ -24,6 +24,13 @@ static bool               ktest_done = false;   /* TODO: needs locking */
 static char               ktest_stats[4096];
 static uint32_t           cbdma_status;
 
+/* PCI config registers; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
+static struct {
+        uint32_t dmauncerrsts; /* DMA Cluster Uncorrectable Error Status */
+        uint32_t chanerr_int;
+
+} cbdmapciregs;
+
 /* MMIO address space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
 static struct {
         uint8_t  chancnt;
@@ -249,8 +256,8 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         */
         printk(KERN_INFO "[before_transfer] update: CHANCTRL\n");
 
-        write8(IOAT_CHANCTRL_ANY_ERR_ABORT_EN | IOAT_CHANCTRL_ERR_COMPLETION_EN,
-                mmio + CBDMA_CHANCTRL_OFFSET);
+        //write8(IOAT_CHANCTRL_ANY_ERR_ABORT_EN | IOAT_CHANCTRL_ERR_COMPLETION_EN,
+        //        mmio + CBDMA_CHANCTRL_OFFSET);
         // write_8(mmio, CBDMA_CHANCTRL_OFFSET, IOAT_CHANCTRL_ANY_ERR_ABORT_EN
         //                                    | IOAT_CHANCTRL_ERR_COMPLETION_EN);
         /* Set channel completion register where CBDMA will write content of
@@ -288,6 +295,18 @@ kmalloc_free: /* TODO: find way to avoid freeing buffer */
         //kfree(ktest_src);
 done:
         return 0;
+}
+
+/* cbdma_update_cbdmapciregs: read the PCI registers and populate cbdmapciregs
+ */ 
+void cbdma_update_cbdmapciregs(void) {
+        /* get updated: DMAUNCERRSTS */
+        cbdmapciregs.dmauncerrsts = pcidev_read32(pci,
+                                                  IOAT_PCI_DMAUNCERRSTS_OFFSET);
+
+        /* get updated: CHANERR_INT */
+        cbdmapciregs.chanerr_int = pcidev_read32(pci,
+                                                 IOAT_PCI_CHANERR_INT_OFFSET);
 }
 
 /* cbdma_update_cbdmadev: read the MMIO registers and populate cmdadev
@@ -333,6 +352,18 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
                 "Intel CBDM [%x:%x] mmio:%x mmio_phy:%x mmio_sz:%lu\n",
                 pci->ven_id, pci->dev_id, mmio, mmio_phy, mmio_sz);
 
+        /* print the PCI registers */
+        cbdma_update_cbdmapciregs();
+        iter = seprintf(iter, ebuf, "    PCI Registers:\n");
+
+        /* PCI: DMAUNCERRSTS */
+        iter = seprintf(iter, ebuf, "\tDMAUNCERRSTS: 0x%x\n",
+                                        cbdmapciregs.dmauncerrsts);
+
+        /* PCI: CHANERR_INT */
+        iter = seprintf(iter, ebuf, "\tCHANERR_INT: 0x%x\n",
+                                        cbdmapciregs.chanerr_int);
+
         /* print the MMIO registers */
         cbdma_update_cbdmadev();
         iter = seprintf(iter, ebuf, "    MMIO Registers:\n");
@@ -353,10 +384,12 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
                 GET_IOAT_VER_MINOR(cbdmadev.cbver));
 
         /* MMIO: CHANSTS */
-        iter = seprintf(iter, ebuf, "\tCHANSTS: 0x%x [%s], desc_addr: 0x%x\n",
+        iter = seprintf(iter, ebuf, "\tCHANSTS: 0x%x [%s], desc_addr: 0x%x, "
+                "raw: 0x%x\n",
                 (cbdmadev.chansts & IOAT_CHANSTS_STATUS),
                 cbdma_str_chansts(cbdmadev.chansts),
-                (cbdmadev.chansts & IOAT_CHANSTS_COMPLETED_DESCRIPTOR_ADDR));
+                (cbdmadev.chansts & IOAT_CHANSTS_COMPLETED_DESCRIPTOR_ADDR),
+                cbdmadev.chansts);
 
         /* MMIO: CHAINADDR */
         iter = seprintf(iter, ebuf, "\tCHAINADDR: 0x%x\n", cbdmadev.chainaddr);
@@ -375,9 +408,14 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
  */
 void cbdma_reset_device() {
         int cbdmaver;
+        uint64_t chanerr;
 
         /* fetch version */
         cbdmaver = read8(mmio + IOAT_VER_OFFSET);
+
+        /* ack channel errros */
+        chanerr = read32(mmio + CBDMA_CHANERR_OFFSET);
+        write32(chanerr, mmio + CBDMA_CHANERR_OFFSET);
 
         /* reset */
         write8(IOAT_CHANCMD_RESET, mmio
@@ -385,6 +423,21 @@ void cbdma_reset_device() {
                                    + IOAT_CHANCMD_OFFSET(cbdmaver));
 
         printk(KERN_INFO "Reset: Intel CBDMA\n");
+}
+
+/* cbdma_is_reset_pending: returns true if reset is pending
+ */
+bool cbdma_is_reset_pending() {
+        int cbdmaver;
+        int status;
+
+        /* fetch version */
+        cbdmaver = read8(mmio + IOAT_VER_OFFSET);
+
+        status = read8(mmio + IOAT_CHANNEL_MMIO_SIZE
+                        + IOAT_CHANCMD_OFFSET(cbdmaver));
+
+        return (status & IOAT_CHANCMD_RESET) == IOAT_CHANCMD_RESET;
 }
 
 static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
