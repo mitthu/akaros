@@ -408,14 +408,26 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
  */
 void cbdma_reset_device() {
         int cbdmaver;
-        uint64_t chanerr;
-
+        uint32_t error;
+ 
         /* fetch version */
         cbdmaver = read8(mmio + IOAT_VER_OFFSET);
 
+        /* set DMACOUNT to zero */
+        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+        
         /* ack channel errros */
-        chanerr = read32(mmio + CBDMA_CHANERR_OFFSET);
-        write32(chanerr, mmio + CBDMA_CHANERR_OFFSET);
+        error = read32(mmio + CBDMA_CHANERR_OFFSET);
+        write32(error, mmio + CBDMA_CHANERR_OFFSET);
+
+        /* ack pci device level errros */
+        /* clear DMA Cluster Uncorrectable Error Status */
+        error = pcidev_read32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET);
+        pcidev_write32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET, error);
+
+        /* clear DMA Channel Error Status */
+        error = pcidev_read32(pci, IOAT_PCI_CHANERR_INT_OFFSET);
+        pcidev_write32(pci, IOAT_PCI_CHANERR_INT_OFFSET, error);
 
         /* reset */
         write8(IOAT_CHANCMD_RESET, mmio
