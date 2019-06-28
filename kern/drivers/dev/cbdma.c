@@ -14,6 +14,7 @@
 #include <page_alloc.h>
 #include <pmap.h>
 #include <cbdma_regs.h>
+#include <arch/pci_regs.h>
 
 struct dev                cbdmadevtab;
 static struct pci_device  *pci;
@@ -347,6 +348,7 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
         char buf[4096];
         char *ebuf = buf + sizeof(buf);
         char *iter = buf;
+        uint64_t value;
 
         iter = seprintf(iter, ebuf,
                 "Intel CBDM [%x:%x] mmio:%x mmio_phy:%x mmio_sz:%lu\n",
@@ -363,6 +365,71 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
         /* PCI: CHANERR_INT */
         iter = seprintf(iter, ebuf, "\tCHANERR_INT: 0x%x\n",
                                         cbdmapciregs.chanerr_int);
+
+        /* sort these out correctly once I solve the reset issue */
+        static enum {
+                PCISTS = 0x6, // 16-bit
+                PCICMD = 0x4, // 16-bit
+                CB_BAR = 0x10, // 64-bit
+                DEVSTS = 0x9a, // 16-bit
+                PMCSR  = 0xe4, // 32-bit
+
+                /* PCIe configuration space */
+                DMAUNCERRSTS = 0x148, // 32-bit
+                DMAUNCERRMSK = 0x14c, // 32-bit
+                DMAUNCERRSEV = 0x150, // 32-bit
+                DMAUNCERRPTR = 0x154, // 8-bit
+                DMAGLBERRPTR = 0x160, // 8-bit
+
+                CHANERR_INT    = 0x180, // 32-bit
+                CHANERRMSK_INT = 0x184, // 32-bit
+                CHANERRSEV_INT = 0x188, // 32-bit
+                CHANERRPTR     = 0x18c, // 8-bit
+        } cbdma_pci_config_registers;
+
+        value = 0; value = pcidev_read16(pci, PCISTS);
+        iter = seprintf(iter, ebuf, "\tPCISTS: 0x%x\n", value);
+
+        value = 0; value = pcidev_read16(pci, PCICMD);
+        iter = seprintf(iter, ebuf, "\tPCICMD: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, CB_BAR); // 64-bit value
+        iter = seprintf(iter, ebuf, "\tCB_BAR: 0x%x\n", value);
+
+        value = 0; value = pcidev_read16(pci, DEVSTS);
+        iter = seprintf(iter, ebuf, "\tDEVSTS: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, PMCSR);
+        iter = seprintf(iter, ebuf, "\tPMCSR: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, DMAUNCERRSTS);
+        iter = seprintf(iter, ebuf, "\tDMAUNCERRSTS: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, DMAUNCERRMSK);
+        iter = seprintf(iter, ebuf, "\tDMAUNCERRMSK: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, DMAUNCERRSEV);
+        iter = seprintf(iter, ebuf, "\tDMAUNCERRSEV: 0x%x\n", value);
+
+        value = 0; value = pcidev_read8(pci, DMAUNCERRPTR);
+        iter = seprintf(iter, ebuf, "\tDMAUNCERRPTR: 0x%x\n", value);
+
+        value = 0; value = pcidev_read8(pci, DMAGLBERRPTR);
+        iter = seprintf(iter, ebuf, "\tDMAGLBERRPTR: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, CHANERR_INT);
+        iter = seprintf(iter, ebuf, "\tCHANERR_INT: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, CHANERRMSK_INT);
+        iter = seprintf(iter, ebuf, "\tCHANERRMSK_INT: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, CHANERRSEV_INT);
+        iter = seprintf(iter, ebuf, "\tCHANERRSEV_INT: 0x%x\n", value);
+
+        value = 0; value = pcidev_read8(pci, CHANERRPTR);
+        iter = seprintf(iter, ebuf, "\tCHANERRPTR: 0x%x\n", value);
+
+        /* ----------------------------------------------------- */
 
         /* print the MMIO registers */
         cbdma_update_cbdmadev();
@@ -410,6 +477,8 @@ void cbdma_reset_device() {
         int cbdmaver;
         uint32_t error;
  
+        pcidev_write16(pci, PCI_COMMAND, PCI_COMMAND_IO | PCI_COMMAND_MEMORY
+                                                        | PCI_COMMAND_MASTER);
         /* fetch version */
         cbdmaver = read8(mmio + IOAT_VER_OFFSET);
 
@@ -433,6 +502,9 @@ void cbdma_reset_device() {
         write8(IOAT_CHANCMD_RESET, mmio
                                    + IOAT_CHANNEL_MMIO_SIZE
                                    + IOAT_CHANCMD_OFFSET(cbdmaver));
+
+        pcidev_write16(pci, PCI_COMMAND, PCI_COMMAND_IO | PCI_COMMAND_MEMORY
+                        | PCI_COMMAND_MASTER | PCI_COMMAND_INTX_DISABLE);
 
         printk(KERN_INFO "Reset: Intel CBDMA\n");
 }
@@ -531,7 +603,7 @@ void cbdmainit(void) {
         }
 
         /* reset device */
-        cbdma_reset_device();
+        // cbdma_reset_device();
 
         printk(KERN_INFO
                 "Registered: Intel CBDM [%x:%x] mmio:%x mmio_sz:%lu\n",
