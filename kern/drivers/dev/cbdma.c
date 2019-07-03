@@ -75,7 +75,7 @@ struct desc {
         uint64_t  reserved1;
 } __attribute__((packed));
 
-#if 1
+#if 0
 /* Helper functions */
 static unsigned char read_8(char *base, int offset) {
   asm volatile("mfence");
@@ -299,14 +299,11 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
          * CHANSTS register upon successful DMA completion or error condition
          */
         printk(KERN_INFO "[before_transfer] update: CHANCMP\n");
-        write_64(mmio, CBDMA_CHANCMP_OFFSET,
-                (uint64_t) PADDR(&cbdmadev.chansts));
-        // write64((uint64_t) PADDR(&cbdmadev.chansts),
-        //         mmio + CBDMA_CHANCMP_OFFSET);
+        write64((uint64_t) PADDR(&cbdmadev.chansts),
+                mmio + CBDMA_CHANCMP_OFFSET);
 
         /* write addr of first desc */
         printk(KERN_INFO "[before_transfer] update: CHAINADDR\n");
-        // write_64(mmio, CBDMA_CHAINADDR_OFFSET, (uint64_t) PADDR(d));
         write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* write valid number of descs: starts the DMA */
@@ -348,8 +345,7 @@ void cbdma_update_cbdmapciregs(void) {
  */ 
 void cbdma_update_cbdmadev(void) {
         /* get updated: CHANCNT */
-        cbdmadev.chancnt = read_64(mmio, CBDMA_CHANCNT_OFFSET);
-        // cbdmadev.chancnt = read64(mmio + CBDMA_CHANCNT_OFFSET);
+        cbdmadev.chancnt = read64(mmio + CBDMA_CHANCNT_OFFSET);
 
         /* get updated: CHANCMD */
         cbdmadev.chancmd = read8(mmio + CBDMA_CHANCMD_OFFSET);
@@ -358,16 +354,13 @@ void cbdma_update_cbdmadev(void) {
         cbdmadev.cbver = read8(mmio + IOAT_VER_OFFSET);
 
         /* get updated: CHANCTRL */
-        cbdmadev.chanctrl = read_64(mmio, CBDMA_CHANCTRL_OFFSET);
-        // cbdmadev.chanctrl = read64(mmio + CBDMA_CHANCTRL_OFFSET);
+        cbdmadev.chanctrl = read64(mmio + CBDMA_CHANCTRL_OFFSET);
 
         /* get updated: CHANSTS */
-        cbdmadev.chansts = read_64(mmio, CBDMA_CHANSTS_OFFSET);
-        // cbdmadev.chansts = read64(mmio + CBDMA_CHANSTS_OFFSET);
+        cbdmadev.chansts = read64(mmio + CBDMA_CHANSTS_OFFSET);
 
         /* get updated: CHAINADDR */
-        cbdmadev.chainaddr = read_64(mmio, CBDMA_CHAINADDR_OFFSET);
-        // cbdmadev.chainaddr = read64(mmio + CBDMA_CHAINADDR_OFFSET);
+        cbdmadev.chainaddr = read64(mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* get updated: DMACOUNT */
         cbdmadev.dmacount = read16(mmio + CBDMA_DMACOUNT_OFFSET);
