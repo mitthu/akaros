@@ -516,9 +516,6 @@ void cbdma_reset_device() {
         /* fetch version */
         cbdmaver = read8(mmio + IOAT_VER_OFFSET);
 
-        /* set DMACOUNT to zero */
-        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
-        
         /* ack channel errros */
         error = read32(mmio + CBDMA_CHANERR_OFFSET);
         write32(error, mmio + CBDMA_CHANERR_OFFSET);
@@ -571,7 +568,14 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
                 return cbdma_stats(c, va, n, offset);
 
         case Qcbdmareset:
-                return readstr(offset, va, n, "Write '1' to perform reset!\n");
+                if (cbdma_is_reset_pending() == TRUE)
+                        return readstr(offset, va, n,
+                                "Status: Reset Pending\n"
+                                "Write '1' to perform reset!\n");
+                else
+                        return readstr(offset, va, n,
+                                "Status: Active\n"
+                                "Write '1' to perform reset!\n");
 
         default:
                 panic("cbdmaread: qid 0x%x is impossible", c->qid.path);
