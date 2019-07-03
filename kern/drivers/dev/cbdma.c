@@ -190,6 +190,40 @@ char *cbdma_str_chansts(uint64_t chansts) {
         return status;
 }
 
+/* print descriptors on console (for debugging) */
+static void dump_desc(struct desc *d, int count) {
+        printk(KERN_INFO "dumping descriptors:\n");
+
+        while (count > 0) {
+                printk(KERN_INFO "desc: 0x%x, size: %d bytes\n",
+                        d, sizeof(struct desc));
+                printk(KERN_INFO "[32] desc->xfer_size: 0x%x\n",
+                        d->xfer_size);
+                printk(KERN_INFO "[32] desc->descriptor_control: 0x%x\n",
+                        d->descriptor_control);
+                printk(KERN_INFO "[64] desc->src_addr: 0x%x\n",
+                        d->src_addr);
+                printk(KERN_INFO "[64] desc->dest_addr: 0x%x\n",
+                        d->dest_addr);
+                printk(KERN_INFO "[64] desc->next_desc_addr: 0x%x\n",
+                        d->next_desc_addr);
+                printk(KERN_INFO "[64] desc->next_source_address: 0x%x\n",
+                        d->next_source_address);
+                printk(KERN_INFO "[64] desc->next_destination_address: 0x%x\n",
+                        d->next_destination_address);
+                printk(KERN_INFO "[64] desc->reserved0: 0x%x\n",
+                        d->reserved0);
+                printk(KERN_INFO "[64] desc->reserved1: 0x%x\n",
+                        d->reserved1);
+
+                count--;
+                if (count > 0) {
+                        printk(KERN_INFO "\n");
+                        d = (struct desc *) d->next_desc_addr;
+                }
+        }
+}
+
 /* cbdma_ktest: performs functional test on CBDMA
    
  - Allocates 2 kernel pages: ktest_src and ktest_dst.
@@ -206,7 +240,7 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
 
         char *desc_page;
         uint64_t desc_page_paddr;
-        struct desc *d;
+        static struct desc *d;
 
         /* check for previously initialed ktest */
         if(ktest_done) {
@@ -239,13 +273,14 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* preparing descriptors */
         d = (struct desc *) desc_page;
-        d->next_desc_addr       = (uint64_t) d + sizeof(struct desc);
+        d->next_desc_addr       = (uint64_t) PADDR(d + 1);
         d->xfer_size            = (uint32_t) ktest_size;
-        d->src_addr             = (uint64_t) ktest_src;
-        d->dest_addr            = (uint64_t) ktest_dst;
+        d->src_addr             = (uint64_t) PADDR(ktest_src);
+        d->dest_addr            = (uint64_t) PADDR(ktest_dst);
         d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
+        dump_desc(d, 1);
         /* initiate transfer */
         printk(KERN_INFO "[before_transfer] ktest_dst:%s\n", ktest_dst);
 
@@ -257,10 +292,9 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         */
         printk(KERN_INFO "[before_transfer] update: CHANCTRL\n");
 
-        //write8(IOAT_CHANCTRL_ANY_ERR_ABORT_EN | IOAT_CHANCTRL_ERR_COMPLETION_EN,
-        //        mmio + CBDMA_CHANCTRL_OFFSET);
-        // write_8(mmio, CBDMA_CHANCTRL_OFFSET, IOAT_CHANCTRL_ANY_ERR_ABORT_EN
-        //                                    | IOAT_CHANCTRL_ERR_COMPLETION_EN);
+        write8(IOAT_CHANCTRL_ANY_ERR_ABORT_EN | IOAT_CHANCTRL_ERR_COMPLETION_EN,
+               mmio + CBDMA_CHANCTRL_OFFSET);
+
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition
          */
@@ -272,8 +306,8 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* write addr of first desc */
         printk(KERN_INFO "[before_transfer] update: CHAINADDR\n");
-        write_64(mmio, CBDMA_CHAINADDR_OFFSET, (uint64_t) PADDR(d));
-        // write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
+        // write_64(mmio, CBDMA_CHAINADDR_OFFSET, (uint64_t) PADDR(d));
+        write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* write valid number of descs: starts the DMA */
         printk(KERN_INFO "[before_transfer] update: DMACOUNT\n");
@@ -603,7 +637,7 @@ void cbdmainit(void) {
         }
 
         /* reset device */
-        // cbdma_reset_device();
+        cbdma_reset_device();
 
         printk(KERN_INFO
                 "Registered: Intel CBDM [%x:%x] mmio:%x mmio_sz:%lu\n",
