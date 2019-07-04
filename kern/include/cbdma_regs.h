@@ -244,7 +244,6 @@
 #define IOAT_CHANERR_MASK_OFFSET		0x2C	/* 32-bit Channel Error Register */
 
 /* Extras. Added by Aditya Basu <mitthu@google.com> */
-#define CBDMA_CHANCNT_OFFSET  	 			0x0
 #define CBDMA_CHANCMD_OFFSET  	 			0x84
 #define CBDMA_CHANSTS_OFFSET  	 			0x88
 #define CBDMA_CHANCTRL_OFFSET  	 			0x80

@@ -1,6 +1,54 @@
 /*
  * File: cbdma.c - Driver for using Intel CBDMA
  * Author: Aditya Basu <mitthu@google.com>
+ * Date: July 3, 2019
+ *
+ * Useful resources:
+ *   - Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2
+ *   - Purley Programmer's Guide
+ *
+ * Acronyms:
+ *   - IOAT: (Intel) I/O Acceleration Technology
+ *   - CDMA: Crystal Beach DMA
+ *
+ * CBDMA Notes
+ * ===========
+ * Every CBDMA PCI function, has one MMIO address space (so only BAR0). Each
+ * function can have multiple channels. Currently these devices only have one
+ * channel per function. This can be read from the CHANCNT register (8-bit)
+ * at offset 0x0.
+ *
+ * Each channel be independently configured for DMA. The MMIO config space of
+ * every channel is 0x80 bytes. The first channel (or CHANNEL_0) starts at 0x80
+ * offset.
+ *
+ * CHAINADDR points to a descriptor (desc) ring buffer. More precisely it points
+ * to the first desc in the ring buffer. Each desc represents a single DMA
+ * operation. Look at "struct desc" for it's structure.
+ *
+ * Each desc is 0x40 bytes (or 64 bytes) in size. A 4k page will be able to hold
+ * 4k/64 = 64 entries. Note that the lower 6 bits of CHANADDR should be zero. So
+ * the first desc's address needs to be aligned accordingly. Page-aligning the
+ * first desc address will work because 4k page-aligned addresses will have
+ * the last 12 bits as zero.
+ *
+ * Userpace (TODO)
+ * ========
+ * - Create API for DMA commands. Create a ctl file for user API?
+ * - Freeze VA->PA page mappings till DMA is completed
+ *
+ * TODO
+ * ====
+ * *MAJOR*
+ *   - Add locks to guard desc access
+ *   - Configure and handle interrupts
+ *   - Need for a debug file?
+ *   - Add multiple descriptors for multiple writes (for later use)
+ *   - Add file for errors
+ * *MINOR*
+ *   - In stats print the total numer of desc
+ *   - Replace all CBDMA_* constants with IOAT_*
+ *   - Remove repeated cbdma_regs.h header file
  */
 
 #include <kmalloc.h>
@@ -25,16 +73,30 @@ static bool               ktest_done = false;   /* TODO: needs locking */
 static char               ktest_stats[4096];
 static uint32_t           cbdma_status;
 
-/* PCI config registers; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
-static struct {
-        uint32_t dmauncerrsts; /* DMA Cluster Uncorrectable Error Status */
-        uint32_t chanerr_int;
+static uint8_t            chancnt; /* Total number of channels per function */
 
-} cbdmapciregs;
+/* PCIe Config Space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
+enum {
+        DEVSTS = 0x9a, // 16-bit
+        PMCSR  = 0xe4, // 32-bit
 
-/* MMIO address space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
-static struct {
-        uint8_t  chancnt;
+        DMAUNCERRSTS = 0x148, // 32-bit (DMA Cluster Uncorrectable Error Status)
+        DMAUNCERRMSK = 0x14c, // 32-bit
+        DMAUNCERRSEV = 0x150, // 32-bit
+        DMAUNCERRPTR = 0x154, // 8-bit
+        DMAGLBERRPTR = 0x160, // 8-bit
+
+        CHANERR_INT    = 0x180, // 32-bit
+        CHANERRMSK_INT = 0x184, // 32-bit
+        CHANERRSEV_INT = 0x188, // 32-bit
+        CHANERRPTR     = 0x18c, // 8-bit
+};
+
+/* MMIO address space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2
+ * Every channel 0x80 bytes in size.
+ */
+/* DEPRECATED */
+static struct channel {
         uint8_t  chancmd;
         uint8_t  xrefcap;
         uint8_t  cbver;
@@ -329,46 +391,6 @@ done:
         return 0;
 }
 
-/* cbdma_update_cbdmapciregs: read the PCI registers and populate cbdmapciregs
- */ 
-void cbdma_update_cbdmapciregs(void) {
-        /* get updated: DMAUNCERRSTS */
-        cbdmapciregs.dmauncerrsts = pcidev_read32(pci,
-                                                  IOAT_PCI_DMAUNCERRSTS_OFFSET);
-
-        /* get updated: CHANERR_INT */
-        cbdmapciregs.chanerr_int = pcidev_read32(pci,
-                                                 IOAT_PCI_CHANERR_INT_OFFSET);
-}
-
-/* cbdma_update_cbdmadev: read the MMIO registers and populate cmdadev
- */ 
-void cbdma_update_cbdmadev(void) {
-        /* get updated: CHANCNT */
-        cbdmadev.chancnt = read64(mmio + CBDMA_CHANCNT_OFFSET);
-
-        /* get updated: CHANCMD */
-        cbdmadev.chancmd = read8(mmio + CBDMA_CHANCMD_OFFSET);
-
-        /* get updated: CBVER */
-        cbdmadev.cbver = read8(mmio + IOAT_VER_OFFSET);
-
-        /* get updated: CHANCTRL */
-        cbdmadev.chanctrl = read64(mmio + CBDMA_CHANCTRL_OFFSET);
-
-        /* get updated: CHANSTS */
-        cbdmadev.chansts = read64(mmio + CBDMA_CHANSTS_OFFSET);
-
-        /* get updated: CHAINADDR */
-        cbdmadev.chainaddr = read64(mmio + CBDMA_CHAINADDR_OFFSET);
-
-        /* get updated: DMACOUNT */
-        cbdmadev.dmacount = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-
-        /* get updated: CHANERR */
-        cbdmadev.chanerr = read16(mmio + CBDMA_CHANERR_OFFSET);
-}
-
 /* cbdma_stats: get stats about the device and driver
  */
 static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
@@ -376,51 +398,27 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
         char *ebuf = buf + sizeof(buf);
         char *iter = buf;
         uint64_t value;
+        const uint8_t width = 20; /* width of register name column */
 
         iter = seprintf(iter, ebuf,
                 "Intel CBDM [%x:%x] mmio:%x mmio_phy:%x mmio_sz:%lu\n",
                 pci->ven_id, pci->dev_id, mmio, mmio_phy, mmio_sz);
 
+        iter = seprintf(iter, ebuf, "Total Channels: %d\n", chancnt);
+
         /* print the PCI registers */
-        cbdma_update_cbdmapciregs();
-        iter = seprintf(iter, ebuf, "    PCI Registers:\n");
+        iter = seprintf(iter, ebuf, "    PCIe Config Registers:\n");
 
-        /* PCI: DMAUNCERRSTS */
-        iter = seprintf(iter, ebuf, "\tDMAUNCERRSTS: 0x%x\n",
-                                        cbdmapciregs.dmauncerrsts);
-
-        /* PCI: CHANERR_INT */
-        iter = seprintf(iter, ebuf, "\tCHANERR_INT: 0x%x\n",
-                                        cbdmapciregs.chanerr_int);
-
-        /* sort these out correctly once I solve the reset issue */
-        static enum {
-                PCISTS = 0x6, // 16-bit
-                PCICMD = 0x4, // 16-bit
-                CB_BAR = 0x10, // 64-bit
-                DEVSTS = 0x9a, // 16-bit
-                PMCSR  = 0xe4, // 32-bit
-
-                /* PCIe configuration space */
-                DMAUNCERRSTS = 0x148, // 32-bit
-                DMAUNCERRMSK = 0x14c, // 32-bit
-                DMAUNCERRSEV = 0x150, // 32-bit
-                DMAUNCERRPTR = 0x154, // 8-bit
-                DMAGLBERRPTR = 0x160, // 8-bit
-
-                CHANERR_INT    = 0x180, // 32-bit
-                CHANERRMSK_INT = 0x184, // 32-bit
-                CHANERRSEV_INT = 0x188, // 32-bit
-                CHANERRPTR     = 0x18c, // 8-bit
-        } cbdma_pci_config_registers;
-
-        value = 0; value = pcidev_read16(pci, PCISTS);
-        iter = seprintf(iter, ebuf, "\tPCISTS: 0x%x\n", value);
-
-        value = 0; value = pcidev_read16(pci, PCICMD);
+        value = 0; value = pcidev_read16(pci, PCI_CMD_REG);
         iter = seprintf(iter, ebuf, "\tPCICMD: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, CB_BAR); // 64-bit value
+        value = 0; value = pcidev_read16(pci, PCI_STATUS_REG);
+        iter = seprintf(iter, ebuf, "\tPCISTS: 0x%x\n", value);
+
+        value = 0; value = pcidev_read16(pci, PCI_REVID_REG);
+        iter = seprintf(iter, ebuf, "\tRID: 0x%x\n", value);
+
+        value = 0; value = pcidev_read32(pci, PCI_BAR0_STD);
         iter = seprintf(iter, ebuf, "\tCB_BAR: 0x%x\n", value);
 
         value = 0; value = pcidev_read16(pci, DEVSTS);
@@ -458,41 +456,44 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* ----------------------------------------------------- */
 
-        /* print the MMIO registers */
-        cbdma_update_cbdmadev();
-        iter = seprintf(iter, ebuf, "    MMIO Registers:\n");
+        /* print the CHANNEL_0 MMIO registers */
+        iter = seprintf(iter, ebuf, "    CHANNEL_0 MMIO Registers:\n");
 
-        /* MMIO: CHANCNT */
-        iter = seprintf(iter, ebuf, "\tCHANCNT: 0x%x\n", cbdmadev.chancnt);
+        /* get updated: CHANCMD */
+        value = 0; value = read8(mmio + CBDMA_CHANCMD_OFFSET);
+        iter = seprintf(iter, ebuf, "\tCHANCMD: 0x%x\n", value);
 
-        /* MMIO: CHANCMD */
-        iter = seprintf(iter, ebuf, "\tCHANCMD: 0x%x\n", cbdmadev.chancmd);
-
-        /* MMIO: CHANCTRL */
-        iter = seprintf(iter, ebuf, "\tCHANCTRL: 0x%x\n", cbdmadev.chanctrl);
-
-        /* MMIO: CBVER */
+        /* get updated: CBVER */
+        value = 0; value = read8(mmio + IOAT_VER_OFFSET);
         iter = seprintf(iter, ebuf, "\tCBVER: 0x%x major=%d minor=%d\n",
-                cbdmadev.cbver,
-                GET_IOAT_VER_MAJOR(cbdmadev.cbver),
-                GET_IOAT_VER_MINOR(cbdmadev.cbver));
+                value,
+                GET_IOAT_VER_MAJOR(value),
+                GET_IOAT_VER_MINOR(value));
 
-        /* MMIO: CHANSTS */
+        /* get updated: CHANCTRL */
+        value = 0; value = read64(mmio + CBDMA_CHANCTRL_OFFSET);
+        iter = seprintf(iter, ebuf, "\tCHANCTRL: 0x%x\n", value);
+
+        /* get updated: CHANSTS */
+        value = 0; value = read64(mmio + CBDMA_CHANSTS_OFFSET);
         iter = seprintf(iter, ebuf, "\tCHANSTS: 0x%x [%s], desc_addr: 0x%x, "
                 "raw: 0x%x\n",
-                (cbdmadev.chansts & IOAT_CHANSTS_STATUS),
-                cbdma_str_chansts(cbdmadev.chansts),
-                (cbdmadev.chansts & IOAT_CHANSTS_COMPLETED_DESCRIPTOR_ADDR),
-                cbdmadev.chansts);
+                (value & IOAT_CHANSTS_STATUS),
+                cbdma_str_chansts(value),
+                (value & IOAT_CHANSTS_COMPLETED_DESCRIPTOR_ADDR),
+                value);
 
-        /* MMIO: CHAINADDR */
-        iter = seprintf(iter, ebuf, "\tCHAINADDR: 0x%x\n", cbdmadev.chainaddr);
+        /* get updated: CHAINADDR */
+        value = 0; value = read64(mmio + CBDMA_CHAINADDR_OFFSET);
+        iter = seprintf(iter, ebuf, "\tCHAINADDR: 0x%x\n", value);
 
-        /* MMIO: DMACOUNT */
-        iter = seprintf(iter, ebuf, "\tDMACOUNT: 0x%x\n", cbdmadev.dmacount);
+        /* get updated: DMACOUNT */
+        value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        iter = seprintf(iter, ebuf, "\tDMACOUNT: 0x%x\n", value);
 
-        /* MMIO: CHANERR */
-        iter = seprintf(iter, ebuf, "\tCHANERR: 0x%x\n", cbdmadev.chanerr);
+        /* get updated: CHANERR */
+        value = 0; value = read16(mmio + CBDMA_CHANERR_OFFSET);
+        iter = seprintf(iter, ebuf, "\tCHANERR: 0x%x\n", value);
 
         *iter   = '\0';
         return readstr(offset, va, n, buf);
@@ -632,6 +633,9 @@ void cbdmainit(void) {
         if (mmio == NULL || mmio_sz == -1) {
                 error(EINVAL, "Cannot register Intel CBDMA\n");                
         }
+
+        /* Get the channel count. Top 3 bits of the register are reserved. */
+        chancnt = read8(mmio + IOAT_CHANCNT_OFFSET) & 0x1F;
 
         /* reset device */
         cbdma_reset_device();
