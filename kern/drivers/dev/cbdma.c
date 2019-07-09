@@ -64,6 +64,8 @@
 #include <cbdma_regs.h>
 #include <arch/pci_regs.h>
 
+#define NDESC 1 // initialize these many descs
+
 struct dev                cbdmadevtab;
 static struct pci_device  *pci;
 static void               *mmio;
@@ -91,21 +93,6 @@ enum {
         CHANERRSEV_INT = 0x188, // 32-bit
         CHANERRPTR     = 0x18c, // 8-bit
 };
-
-/* MMIO address space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2
- * Every channel 0x80 bytes in size.
- */
-/* DEPRECATED */
-static struct channel {
-        uint8_t  chancmd;
-        uint8_t  xrefcap;
-        uint8_t  cbver;
-        uint16_t chanctrl;
-        uint16_t dmacount;
-        uint32_t chanerr;
-        uint64_t chansts;
-        uint64_t chainaddr;
-} cbdmadev;
 
 /* QID Path */
 enum {
@@ -136,6 +123,26 @@ struct desc {
         uint64_t  reserved0;
         uint64_t  reserved1;
 } __attribute__((packed));
+
+/* The channels are indexed starting from 0 */
+static struct channel {
+        uint8_t         number; // channel number
+        struct desc     *pdesc; // desc ptr
+        int             ndesc;  // num. of desc
+
+/* DEPRECATED */
+/* MMIO address space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2
+ * Every channel 0x80 bytes in size.
+ */
+        uint8_t  chancmd;
+        uint8_t  xrefcap;
+        uint8_t  cbver;
+        uint16_t chanctrl;
+        uint16_t dmacount;
+        uint32_t chanerr;
+        uint64_t chansts;
+        uint64_t chainaddr;
+} cbdmadev, channel0;
 
 #if 0
 /* Helper functions */
@@ -254,7 +261,7 @@ char *cbdma_str_chansts(uint64_t chansts) {
 
 /* print descriptors on console (for debugging) */
 static void dump_desc(struct desc *d, int count) {
-        printk(KERN_INFO "dumping descriptors:\n");
+        printk(KERN_INFO "dumping descriptors (count = %d):\n", count);
 
         while (count > 0) {
                 printk(KERN_INFO "desc: 0x%x, size: %d bytes\n",
@@ -279,13 +286,148 @@ static void dump_desc(struct desc *d, int count) {
                         d->reserved1);
 
                 count--;
-                if (count > 0) {
-                        printk(KERN_INFO "\n");
-                        d = (struct desc *) d->next_desc_addr;
-                }
+                if (count > 0)
+                        d = (struct desc *) KADDR(d->next_desc_addr);
+                printk(KERN_INFO "\n");
         }
 }
 
+/* initialize the desc
+ 
+ - NOTE: max value of ndesc on x86 = 64. Reason we only allocate _one_ 4k page.
+ - Can be called multiple times, with different "ndesc" values.
+ */
+static void init_desc(struct channel *c, int ndesc) {
+        struct desc *d;
+        int i;
+        const int max_ndesc = PGSIZE / sizeof(struct desc);
+
+        /* sanity checks */
+        if (ndesc > max_ndesc) {
+                printk(KERN_INFO
+                        "cbdma: allocating only %d desc instead of %d desc\n",
+                        max_ndesc, ndesc);
+                ndesc = max_ndesc;
+        }
+
+        c->ndesc = ndesc;
+
+        /* allocate pages for descriptors, last 6-bits must be zero */
+        if (!c->pdesc)
+                c->pdesc = kpage_alloc_addr();
+
+        if (!c->pdesc) /* error does not return */
+                error(ENOMEM, "cbdma: cannot alloc page for desc");
+
+        memset(c->pdesc, 0x0, PGSIZE);
+
+        /* should be always valid for page aligned addresses */
+        assert((PADDR(c->pdesc) & 0x3F) == 0);
+
+        /* preparing descriptors */
+        d = (struct desc *) c->pdesc;
+
+        for (i = 0; i < c->ndesc; i++) {
+                d->next_desc_addr = PADDR(d) + ((i+1) * sizeof(struct desc));
+                d++;
+        }
+}
+
+/* cbdma_ktest: performs functional test on CBDMA
+   
+ - Allocates 2 kernel pages: ktest_src and ktest_dst.
+ - memsets the ktest_src page
+ - Prepare descriptors for DMA transfer (need to be aligned)
+ - Initiate the transfer
+ - Verify results
+ - Print stats
+ */ 
+static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
+        static char *ktest_src = NULL;
+        static char *ktest_dst = NULL;
+        const int ktest_size = 64;
+
+        char *desc_page;
+        uint64_t desc_page_paddr;
+        static struct desc *d;
+
+        /* check for previously initialed ktest */
+        if(ktest_done) {
+                printk(KERN_INFO "ktest done! curr dst: %s\n", ktest_dst);
+                goto done;
+        } else
+                ktest_done = true; /* TODO: lock or atomic operation */
+
+        /* allocate ktest_src & ktest_dst buffers and initialize with different values */
+        ktest_src = ktest_src == NULL ? kmalloc(ktest_size, MEM_WAIT)
+                                      : ktest_src;
+        ktest_dst = ktest_dst == NULL ? kmalloc(ktest_size, MEM_WAIT)
+                                      : ktest_dst;
+        memset(ktest_src, 0x31, ktest_size); /* ascii for '1' */
+        memset(ktest_dst, 0x30, ktest_size); /* ascii for '0' */
+        ktest_src[ktest_size-1] = '\0';
+        ktest_dst[ktest_size-1] = '\0';
+
+        printk(KERN_INFO "ktest_src:%x ktest_dst:%x\n", ktest_src, ktest_dst);
+
+        /* preparing descriptors */
+        d = channel0.pdesc;
+        d->xfer_size            = (uint32_t) ktest_size;
+        d->src_addr             = (uint64_t) PADDR(ktest_src);
+        d->dest_addr            = (uint64_t) PADDR(ktest_dst);
+        d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
+                                  CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
+
+        dump_desc(d, NDESC);
+        /* initiate transfer */
+        printk(KERN_INFO "[before_transfer] ktest_dst:%s\n", ktest_dst);
+
+        /* Set "Any Error Abort Enable": enables abort for any error encountered
+         * Set "Error Completion Enable": enables completion write to address in
+                                          CHANCMP for any error
+         * Reset "Interrupt Disable": W1C, when clear enables interrupt to fire
+                                    for next descriptor that specifies interrupt
+        */
+        printk(KERN_INFO "[before_transfer] update: CHANCTRL\n");
+
+        write8(IOAT_CHANCTRL_ANY_ERR_ABORT_EN | IOAT_CHANCTRL_ERR_COMPLETION_EN,
+               mmio + CBDMA_CHANCTRL_OFFSET);
+
+        /* Set channel completion register where CBDMA will write content of
+         * CHANSTS register upon successful DMA completion or error condition
+         */
+        printk(KERN_INFO "[before_transfer] update: CHANCMP\n");
+        write64((uint64_t) PADDR(&cbdmadev.chansts),
+                mmio + CBDMA_CHANCMP_OFFSET);
+
+        /* write addr of first desc */
+        printk(KERN_INFO "[before_transfer] update: CHAINADDR\n");
+        write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
+
+        /* write valid number of descs: starts the DMA */
+        printk(KERN_INFO "[before_transfer] update: DMACOUNT\n");
+        write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        /* wait for completion */
+        while ((cbdmadev.chansts & IOAT_CHANSTS_STATUS)
+                == IOAT_CHANSTS_ACTIVE) {
+                printk(KERN_INFO "[after_transfer] read: CHANSTS\n");
+                cbdmadev.chansts = read64(mmio + CBDMA_CHANSTS_OFFSET);
+        }
+        printk(KERN_INFO "[after_transfer] CHANSTS: %s\n",
+                cbdma_str_chansts(cbdmadev.chansts));
+        printk(KERN_INFO "[after_transfer] ktest_dst:%s\n", ktest_dst);
+
+kpage_free:
+        /* TODO: free the kpage */
+kmalloc_free: /* TODO: find way to avoid freeing buffer */
+        //kfree(ktest_dst);
+        //kfree(ktest_src);
+done:
+        return 0;
+}
+
+#if 0
 /* cbdma_ktest: performs functional test on CBDMA
    
  - Allocates 2 kernel pages: ktest_src and ktest_dst.
@@ -390,11 +532,12 @@ kmalloc_free: /* TODO: find way to avoid freeing buffer */
 done:
         return 0;
 }
+#endif
 
 /* cbdma_stats: get stats about the device and driver
  */
 static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
-        char buf[4096];
+        char buf[4096]; /* TODO: parameterize size */
         char *ebuf = buf + sizeof(buf);
         char *iter = buf;
         uint64_t value;
@@ -409,9 +552,13 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
         iter = seprintf(iter, ebuf,
                 "\tmmio: %p\n"
                 "\tmmio_phy: 0x%x\n"
-                "\tmmio_sz: %lu\n",
-                "\ttotal_channels: %d\n",
-                mmio, mmio_phy, mmio_sz, chancnt);
+                "\tmmio_sz: %lu\n"
+                "\ttotal_channels: %d\n"
+                "\tdesc_kaddr: %p\n"
+                "\tdesc_paddr: %p\n"
+                "\tdesc_num: %d\n",
+                mmio, mmio_phy, mmio_sz, chancnt,
+                channel0.pdesc, PADDR(channel0.pdesc), channel0.ndesc);
 
         /* print the PCI registers */
         iter = seprintf(iter, ebuf, "    PCIe Config Registers:\n");
@@ -508,7 +655,7 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
 
 /* cbdma_reset_device: this fixes any programming errors done before
  */
-void cbdma_reset_device() {
+static void cbdma_reset_device() {
         int cbdmaver;
         uint32_t error;
 
@@ -549,7 +696,7 @@ void cbdma_reset_device() {
 
 /* cbdma_is_reset_pending: returns true if reset is pending
  */
-bool cbdma_is_reset_pending() {
+static bool cbdma_is_reset_pending() {
         int cbdmaver;
         int status;
 
@@ -665,6 +812,11 @@ void cbdmainit(void) {
 
         /* Get the channel count. Top 3 bits of the register are reserved. */
         chancnt = read8(mmio + IOAT_CHANCNT_OFFSET) & 0x1F;
+
+        /* initialize channel(s) */
+        channel0.number = 0;
+        channel0.pdesc = NULL;
+        init_desc(&channel0, NDESC);
 
         /* initialization successful; print stats */
         printk(KERN_INFO
