@@ -66,8 +66,8 @@
 
 struct dev                cbdmadevtab;
 static struct pci_device  *pci;
-static void               *mmio; /* TODO: assumes 64-bit architecture */
-static void               *mmio_phy; /* physical addr */
+static void               *mmio;
+static uint64_t           mmio_phy; /* physical addr */
 static uint32_t           mmio_sz;
 static bool               ktest_done = false;   /* TODO: needs locking */
 static char               ktest_stats[4096];
@@ -401,10 +401,17 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
         const uint8_t width = 20; /* width of register name column */
 
         iter = seprintf(iter, ebuf,
-                "Intel CBDM [%x:%x] mmio:%x mmio_phy:%x mmio_sz:%lu\n",
-                pci->ven_id, pci->dev_id, mmio, mmio_phy, mmio_sz);
+                "Intel CBDMA [%x:%x] registered at %02x:%02x.%x\n",
+                pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func);
 
-        iter = seprintf(iter, ebuf, "Total Channels: %d\n", chancnt);
+        /* driver info. */
+        iter = seprintf(iter, ebuf, "    Driver Information:\n");
+        iter = seprintf(iter, ebuf,
+                "\tmmio: %p\n"
+                "\tmmio_phy: 0x%x\n"
+                "\tmmio_sz: %lu\n",
+                "\ttotal_channels: %d\n",
+                mmio, mmio_phy, mmio_sz, chancnt);
 
         /* print the PCI registers */
         iter = seprintf(iter, ebuf, "    PCIe Config Registers:\n");
@@ -531,7 +538,7 @@ void cbdma_reset_device() {
         pcidev_write16(pci, PCI_COMMAND, PCI_COMMAND_IO | PCI_COMMAND_MEMORY
                         | PCI_COMMAND_MASTER | PCI_COMMAND_INTX_DISABLE);
 
-        printk(KERN_INFO "Reset: Intel CBDMA\n");
+        printk(KERN_INFO "cbdma: reset performed\n");
 }
 
 /* cbdma_is_reset_pending: returns true if reset is pending
@@ -616,7 +623,7 @@ void cbdmainit(void) {
         /* search for the device 00:04.0 */
         pci = pci_match_tbdf(tbdf);
         if (pci == NULL) {
-                error(EINVAL, "Intel CBDMA PCI device not found\n");
+                error(EINVAL, "cbdma: Intel CBDMA PCI device not found\n");
                 return;
         }
 
@@ -624,15 +631,25 @@ void cbdmainit(void) {
         for (i = 0; i < COUNT_OF(pci->bar); i++) {
                 if (pci->bar[i].mmio_sz == 0)
                         continue;
-                mmio_phy = (void *) pci->bar[i].mmio_base64;
-                mmio     = (void *) KADDR(pci->bar[i].mmio_base64);
+                mmio_phy = (pci->bar[0].mmio_base32
+                         ? pci->bar[0].mmio_base32
+                         : pci->bar[0].mmio_base64);
                 mmio_sz  = pci->bar[i].mmio_sz;
+                mmio     = (void *) vmap_pmem_nocache(mmio_phy, mmio_sz);
                 break;
         }
 
-        if (mmio == NULL || mmio_sz == -1) {
-                error(EINVAL, "Cannot register Intel CBDMA\n");                
+        /* handle any errors */
+        if (mmio_sz == -1) {
+                error(EINVAL, "cbdma: invalid mmio_sz");
         }
+
+        if (mmio == NULL) {
+                error(EINVAL, "cbdma: cannot map %p\n", mmio_phy);
+        }
+
+        /* performance related stuff */
+        pci_set_cacheline_size(pci);
 
         /* Get the channel count. Top 3 bits of the register are reserved. */
         chancnt = read8(mmio + IOAT_CHANCNT_OFFSET) & 0x1F;
@@ -641,8 +658,10 @@ void cbdmainit(void) {
         cbdma_reset_device();
 
         printk(KERN_INFO
-                "Registered: Intel CBDM [%x:%x] mmio:%x mmio_sz:%lu\n",
-                pci->ven_id, pci->dev_id, mmio, mmio_sz);
+                "cbdma: registered [%x:%x] at %02x:%02x.%x // "
+                "mmio:%p mmio_sz:%lu\n",
+                pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func,
+                mmio, mmio_sz);
 }
 
 struct dev cbdmadevtab __devtab = {
