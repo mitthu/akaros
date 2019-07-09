@@ -511,6 +511,12 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
 void cbdma_reset_device() {
         int cbdmaver;
         uint32_t error;
+
+        /* make sure the driver is initialized */
+        if (!mmio) {
+                error(EPERM, "cbdma: mmio addr not set");
+                return; /* does not reach */
+        }
  
         pcidev_write16(pci, PCI_COMMAND, PCI_COMMAND_IO | PCI_COMMAND_MEMORY
                                                         | PCI_COMMAND_MASTER);
@@ -546,6 +552,12 @@ void cbdma_reset_device() {
 bool cbdma_is_reset_pending() {
         int cbdmaver;
         int status;
+
+        /* make sure the driver is initialized */
+        if (!mmio) {
+                error(EPERM, "cbdma: mmio addr not set");
+                return false; /* does not reach */
+        }
 
         /* fetch version */
         cbdmaver = read8(mmio + IOAT_VER_OFFSET);
@@ -654,14 +666,15 @@ void cbdmainit(void) {
         /* Get the channel count. Top 3 bits of the register are reserved. */
         chancnt = read8(mmio + IOAT_CHANCNT_OFFSET) & 0x1F;
 
-        /* reset device */
-        cbdma_reset_device();
-
+        /* initialization successful; print stats */
         printk(KERN_INFO
                 "cbdma: registered [%x:%x] at %02x:%02x.%x // "
                 "mmio:%p mmio_sz:%lu\n",
                 pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func,
                 mmio, mmio_sz);
+
+        /* reset device */
+        cbdma_reset_device();
 }
 
 struct dev cbdmadevtab __devtab = {
