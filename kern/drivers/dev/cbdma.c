@@ -648,12 +648,12 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* get updated: CHANCTRL */
         value = 0; value = read64(mmio + CBDMA_CHANCTRL_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANCTRL: 0x%x\n", value);
+        iter = seprintf(iter, ebuf, "\tCHANCTRL: 0x%llx\n", value);
 
         /* get updated: CHANSTS */
         value = 0; value = read64(mmio + CBDMA_CHANSTS_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANSTS: 0x%x [%s], desc_addr: 0x%x, "
-                "raw: 0x%x\n",
+        iter = seprintf(iter, ebuf, "\tCHANSTS: 0x%x [%s], desc_addr: %p, "
+                "raw: 0x%llx\n",
                 (value & IOAT_CHANSTS_STATUS),
                 cbdma_str_chansts(value),
                 (value & IOAT_CHANSTS_COMPLETED_DESCRIPTOR_ADDR),
@@ -661,11 +661,11 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* get updated: CHAINADDR */
         value = 0; value = read64(mmio + CBDMA_CHAINADDR_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHAINADDR: 0x%x\n", value);
+        iter = seprintf(iter, ebuf, "\tCHAINADDR: %p\n", value);
 
         /* get updated: CHANCMP */
         value = 0; value = read64(mmio + CBDMA_CHANCMP_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANCMP: 0x%x\n", value);
+        iter = seprintf(iter, ebuf, "\tCHANCMP: %p\n", value);
 
         /* get updated: DMACOUNT */
         value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
