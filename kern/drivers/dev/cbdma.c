@@ -388,13 +388,13 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
         /* get updated: DMACOUNT */
-        value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        printk("\tDMACOUNT: 0x%x\n", value);
+        // value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        // printk("\tDMACOUNT: 0x%x\n", value);
 
-        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+        // write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
 
-        value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        printk("\tDMACOUNT: 0x%x\n", value);
+        // value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        // printk("\tDMACOUNT: 0x%x\n", value);
 
         /* write locate of first desc to register CHAINADDR */
         write64((uint64_t) PADDR(channel0.pdesc), mmio + CBDMA_CHAINADDR_OFFSET);
@@ -406,12 +406,18 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
                 == IOAT_CHANSTS_ACTIVE) { }
 
-        /* clear out DMACOUNT */
-        value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        write16(value, mmio + CBDMA_DMACOUNT_OFFSET);
 
-        /* act errors */
-        value = 0; value = pcidev_read32(pci, CHANERR_INT);
+        /* write locate of first desc to register CHAINADDR */
+        write64(0, mmio + CBDMA_CHAINADDR_OFFSET);
+
+        /* clear out DMACOUNT */
+        // value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        /* ack errors */
+        value = pcidev_read32(pci, CHANERR_INT);
+        if (value != 0)
+                printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
         pcidev_write32(pci, CHANERR_INT, value);
 
         ktest.done = true; /* TODO: lock or atomic operation */
