@@ -100,7 +100,7 @@ enum {
 
 static struct dirtab cbdmadir[] = {
         {".",         {Qdir, 0, QTDIR}, 0, 0555},
-        {"ktest",     {Qcbdmaktest, 0, QTFILE}, 0, 0555},
+        {"ktest",     {Qcbdmaktest, 0, QTFILE}, 0, 0755},
         {"stats",     {Qcbdmastats, 0, QTFILE}, 0, 0555},
         {"reset",     {Qcbdmareset, 0, QTFILE}, 0, 0755},
 };
@@ -386,7 +386,10 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
-        /* write valid number of descs: starts the DMA */
+        /* write locate of first desc to register CHAINADDR */
+        write64((uint64_t) PADDR(channel0.pdesc), mmio + CBDMA_CHAINADDR_OFFSET);
+
+        /* writing valid number of descs: starts the DMA */
         write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
 
         /* wait for completion */
@@ -399,6 +402,8 @@ done:
         iter = seprintf(iter, ebuf,
            "Self-test Intel CBDMA [%x:%x] registered at %02x:%02x.%x\n",
            pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func);
+
+        iter = seprintf(iter, ebuf,"\tHelp: Write 1 to re-run the test.\n");
 
         iter = seprintf(iter, ebuf,"\tRun this time? %s\n",
                 did_run ? "Yes" : "No");
@@ -627,7 +632,7 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
                 GET_IOAT_VER_MINOR(value));
 
         /* get updated: CHANCTRL */
-        value = 0; value = read64(mmio + CBDMA_CHANCTRL_OFFSET);
+        value = 0; value = read16(mmio + CBDMA_CHANCTRL_OFFSET);
         iter = seprintf(iter, ebuf, "\tCHANCTRL: 0x%llx\n", value);
 
         /* get updated: CHANSTS */
@@ -756,7 +761,14 @@ static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
                 error(EPERM, "writing not permitted");
 
         case Qcbdmaktest:
-                error(EPERM, "writing not permitted");
+                if (offset == 0 && n > 0 && *(char *)va == '1') {
+                        /* TODO: use locks to verify no running test */
+                        ktest.done = false;
+                        ktest.srcfill += 1;
+                        ktest.dstfill += 1;
+                } else
+                        error(EINVAL, "invalid argument");
+                return n;
 
         case Qcbdmastats:
                 error(EPERM, "writing not permitted");
@@ -807,9 +819,6 @@ static void init_channel(struct channel *c, int cnum, int ndesc) {
          * CHANSTS register upon successful DMA completion or error condition
          */
         write64(PADDR(c->status), get_register(c, IOAT_CHANCMP_OFFSET));
-
-        printk(KERN_INFO "cbdma: update: CHAINADDR\n");
-        write64((uint64_t) PADDR(c->pdesc), mmio + CBDMA_CHAINADDR_OFFSET);
 }
 
 void cbdmainit(void) {
