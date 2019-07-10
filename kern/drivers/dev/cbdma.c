@@ -362,6 +362,7 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         char *ebuf = ktest.printbuf + sizeof(ktest.printbuf);
         char *iter = ktest.printbuf;
         bool did_run;
+        uint64_t value;
 
         /* check for previously initialed ktest */
         if(ktest.done) {
@@ -386,6 +387,15 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
+        /* get updated: DMACOUNT */
+        value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        printk("\tDMACOUNT: 0x%x\n", value);
+
+        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        printk("\tDMACOUNT: 0x%x\n", value);
+
         /* write locate of first desc to register CHAINADDR */
         write64((uint64_t) PADDR(channel0.pdesc), mmio + CBDMA_CHAINADDR_OFFSET);
 
@@ -395,6 +405,14 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         /* wait for completion */
         while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
                 == IOAT_CHANSTS_ACTIVE) { }
+
+        /* clear out DMACOUNT */
+        value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        write16(value, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        /* act errors */
+        value = 0; value = pcidev_read32(pci, CHANERR_INT);
+        pcidev_write32(pci, CHANERR_INT, value);
 
         ktest.done = true; /* TODO: lock or atomic operation */
 
@@ -755,38 +773,6 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
         return -1;      /* not reached */
 }
 
-static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
-        switch (c->qid.path) {
-        case Qdir:
-                error(EPERM, "writing not permitted");
-
-        case Qcbdmaktest:
-                if (offset == 0 && n > 0 && *(char *)va == '1') {
-                        /* TODO: use locks to verify no running test */
-                        ktest.done = false;
-                        ktest.srcfill += 1;
-                        ktest.dstfill += 1;
-                } else
-                        error(EINVAL, "invalid argument");
-                return n;
-
-        case Qcbdmastats:
-                error(EPERM, "writing not permitted");
-
-        case Qcbdmareset:
-                if (offset == 0 && n > 0 && *(char *)va == '1') {
-                        cbdma_reset_device();
-                } else
-                        error(EINVAL, "invalid argument");
-                return n;
-
-        default:
-                panic("cbdmawrite: qid 0x%x is impossible", c->qid.path);
-        }
-
-        return -1;      /* not reached */
-}
-
 static void init_channel(struct channel *c, int cnum, int ndesc) {
         c->number = cnum;
         c->pdesc = NULL;
@@ -797,9 +783,9 @@ static void init_channel(struct channel *c, int cnum, int ndesc) {
         /* this is a writeback field; the hardware will update this value */
         if (c->status == 0)
                 c->status = (uint64_t)
-                             kmalloc_align(sizeof(uint64_t), MEM_WAIT, 64);
+                        kmalloc_align(sizeof(uint64_t), MEM_WAIT, 8);
         assert(c->status != 0);
-        assert((c->status & 0x3F) == 0);
+        assert((c->status & 0x7) == 0);
 
         printk(KERN_INFO "cbdma: c->status = %x\n", c->status);
 
@@ -819,6 +805,54 @@ static void init_channel(struct channel *c, int cnum, int ndesc) {
          * CHANSTS register upon successful DMA completion or error condition
          */
         write64(PADDR(c->status), get_register(c, IOAT_CHANCMP_OFFSET));
+}
+
+static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
+        switch (c->qid.path) {
+        case Qdir:
+                error(EPERM, "writing not permitted");
+
+        case Qcbdmaktest:
+                if (offset == 0 && n > 0 && *(char *)va == '1') {
+                        /* TODO: use locks to verify no running test */
+                        ktest.done = false;
+                        ktest.srcfill += 1;
+                } else
+                        error(EINVAL, "cannot be empty string");
+                return n;
+
+        case Qcbdmastats:
+                error(EPERM, ERROR_FIXME);
+
+        case Qcbdmareset:
+                if (offset == 0 && n > 0 && *(char *)va == '1') {
+                        cbdma_reset_device();
+                        init_channel(&channel0, 0, NDESC);
+                } else
+                        error(EINVAL, "cannot be empty string");
+                return n;
+
+        default:
+                panic("cbdmawrite: qid 0x%x is impossible", c->qid.path);
+        }
+
+        return -1;      /* not reached */
+}
+
+static void cbdma_interrupt(struct hw_trapframe *hw_tf, void *arg)
+{
+        uint16_t value;
+
+        I_AM_HERE;
+        
+        value = read16(get_register(&channel0, IOAT_CHANCTRL_OFFSET));
+        printk("[READ] IOAT_CHANCTRL_OFFSET = 0x%x\n", value);
+        printk("[WRITE] IOAT_CHANCTRL_OFFSET = 0x%x\n", value|IOAT_CHANCTRL_INT_REARM);
+        write16(value|IOAT_CHANCTRL_INT_REARM,
+               get_register(&channel0, IOAT_CHANCTRL_OFFSET));
+        value = read16(get_register(&channel0, IOAT_CHANCTRL_OFFSET));
+        printk("[READ] IOAT_CHANCTRL_OFFSET = 0x%x\n", value);
+
 }
 
 void cbdmainit(void) {
@@ -871,6 +905,7 @@ void cbdmainit(void) {
                 "mmio:%p mmio_sz:%lu\n",
                 pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func,
                 mmio, mmio_sz);
+        register_irq(pci->irqline, cbdma_interrupt, NULL, tbdf);
 
         /* reset device */
         cbdma_reset_device();
