@@ -71,9 +71,6 @@ static struct pci_device  *pci;
 static void               *mmio;
 static uint64_t           mmio_phy; /* physical addr */
 static uint32_t           mmio_sz;
-static bool               ktest_done = false;   /* TODO: needs locking */
-static char               ktest_stats[4096];
-
 static uint8_t            chancnt; /* Total number of channels per function */
 
 /* PCIe Config Space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
@@ -125,11 +122,11 @@ struct desc {
 
 /* The channels are indexed starting from 0 */
 static struct channel {
-        uint8_t         number; // channel number
-        struct desc     *pdesc; // desc ptr
-        int             ndesc;  // num. of desc
-        uint64_t        status; // reg: CHANSTS, needs to be 64B aligned
-        uint8_t         ver;    // reg: CBVER
+        uint8_t                 number; // channel number
+        struct desc             *pdesc; // desc ptr
+        int                     ndesc;  // num. of desc
+        volatile uint64_t       status; // reg: CHANSTS, needs to be 64B aligned
+        uint8_t                 ver;    // reg: CBVER
 
 /* DEPRECATED */
 /* MMIO address space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2
@@ -143,6 +140,16 @@ static struct channel {
         uint64_t chansts;
         uint64_t chainaddr;
 } cbdmadev, channel0;
+
+#define KTEST_SIZE 64
+static struct {
+        bool    done;
+        char    printbuf[4096];
+        char    src[KTEST_SIZE];
+        char    dst[KTEST_SIZE];
+        char    srcfill;
+        char    dstfill;
+} ktest;    /* TODO: needs locking */
 
 #if 0
 /* Helper functions */
@@ -351,96 +358,69 @@ static void init_desc(struct channel *c, int ndesc) {
  - Print stats
  */ 
 static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
-        static char *ktest_src = NULL;
-        static char *ktest_dst = NULL;
-        const int ktest_size = 64;
-
-        char *desc_page;
-        uint64_t desc_page_paddr;
         static struct desc *d;
+        char *ebuf = ktest.printbuf + sizeof(ktest.printbuf);
+        char *iter = ktest.printbuf;
+        bool did_run;
 
         /* check for previously initialed ktest */
-        if(ktest_done) {
-                printk(KERN_INFO "ktest done! curr dst: %s\n", ktest_dst);
+        if(ktest.done) {
+                did_run = false;
                 goto done;
-        } else
-                ktest_done = true; /* TODO: lock or atomic operation */
+        }
+        else {
+                did_run = true;
+        }
 
-        /* allocate ktest_src & ktest_dst buffers and initialize with different values */
-        ktest_src = ktest_src == NULL ? kmalloc(ktest_size, MEM_WAIT)
-                                      : ktest_src;
-        ktest_dst = ktest_dst == NULL ? kmalloc(ktest_size, MEM_WAIT)
-                                      : ktest_dst;
-        memset(ktest_src, 0x31, ktest_size); /* ascii for '1' */
-        memset(ktest_dst, 0x30, ktest_size); /* ascii for '0' */
-        ktest_src[ktest_size-1] = '\0';
-        ktest_dst[ktest_size-1] = '\0';
-
-        printk(KERN_INFO "ktest_src:%x ktest_dst:%x\n", ktest_src, ktest_dst);
+        /* initialize src and dst address */
+        memset(ktest.src, ktest.srcfill, KTEST_SIZE);
+        memset(ktest.dst, ktest.dstfill, KTEST_SIZE);
+        ktest.src[KTEST_SIZE-1] = '\0';
+        ktest.dst[KTEST_SIZE-1] = '\0';
 
         /* preparing descriptors */
         d = channel0.pdesc;
-        d->xfer_size            = (uint32_t) ktest_size;
-        d->src_addr             = (uint64_t) PADDR(ktest_src);
-        d->dest_addr            = (uint64_t) PADDR(ktest_dst);
+        d->xfer_size            = (uint32_t) KTEST_SIZE;
+        d->src_addr             = (uint64_t) PADDR(ktest.src);
+        d->dest_addr            = (uint64_t) PADDR(ktest.dst);
         d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
-        dump_desc(d, NDESC);
-        /* initiate transfer */
-        printk(KERN_INFO "[before_transfer] ktest_dst:%s\n", ktest_dst);
-
-        // /* Set "Any Error Abort Enable": enables abort for any error encountered
-        //  * Set "Error Completion Enable": enables completion write to address in
-        //                                   CHANCMP for any error
-        //  * Reset "Interrupt Disable": W1C, when clear enables interrupt to fire
-        //                             for next descriptor that specifies interrupt
-        // */
-        // printk(KERN_INFO "[before_transfer] update: CHANCTRL\n");
-
-        // write8(IOAT_CHANCTRL_ANY_ERR_ABORT_EN | IOAT_CHANCTRL_ERR_COMPLETION_EN,
-        //        mmio + CBDMA_CHANCTRL_OFFSET);
-
-        // /* Set channel completion register where CBDMA will write content of
-        //  * CHANSTS register upon successful DMA completion or error condition
-        //  */
-        // printk(KERN_INFO "[before_transfer] update: CHANCMP\n");
-        // write64((uint64_t) PADDR(&cbdmadev.chansts),
-        //         mmio + CBDMA_CHANCMP_OFFSET);
-        // write64(PADDR(channel0.status),
-        //         mmio + CBDMA_CHANCMP_OFFSET);
-
-        // /* write addr of first desc */
-        // printk(KERN_INFO "[before_transfer] update: CHAINADDR\n");
-        // write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
-
-        // write64((uint64_t) PADDR(channel0.pdesc),
-        //         get_register(&channel0, IOAT_CHAINADDR_OFFSET(channel0.ver)));
- 
-        /* write addr of first desc;
-        writing to DMACOUNT will initiate transfer */
-
         /* write valid number of descs: starts the DMA */
-        printk(KERN_INFO "[before_transfer] update: DMACOUNT\n");
         write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
 
         /* wait for completion */
         while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
-                == IOAT_CHANSTS_ACTIVE) {
-                printk(KERN_INFO "[after_transfer] read: CHANSTS\n");
-                cbdmadev.chansts = read64(mmio + CBDMA_CHANSTS_OFFSET);
-        }
-        printk(KERN_INFO "[after_transfer] CHANSTS: %s\n",
-                cbdma_str_chansts(*((uint64_t *)channel0.status)));
-        printk(KERN_INFO "[after_transfer] ktest_dst:%s\n", ktest_dst);
+                == IOAT_CHANSTS_ACTIVE) { }
 
-kpage_free:
-        /* TODO: free the kpage */
-kmalloc_free: /* TODO: find way to avoid freeing buffer */
-        //kfree(ktest_dst);
-        //kfree(ktest_src);
+        ktest.done = true; /* TODO: lock or atomic operation */
+
 done:
-        return 0;
+        iter = seprintf(iter, ebuf,
+           "Self-test Intel CBDMA [%x:%x] registered at %02x:%02x.%x\n",
+           pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func);
+
+        iter = seprintf(iter, ebuf,"\tRun this time? %s\n",
+                did_run ? "Yes" : "No");
+
+        iter = seprintf(iter, ebuf,"\tCompleted? %s\n",
+                ktest.done ? "Yes" : "No");
+
+        iter = seprintf(iter, ebuf,"\tChannel Status: %s (raw: 0x%x)\n",
+                cbdma_str_chansts(*((uint64_t *)channel0.status)),
+                (*((uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS));
+
+        iter = seprintf(iter, ebuf,"\tCopy Size: %d (0x%x)\n",
+                KTEST_SIZE, KTEST_SIZE);
+
+        iter = seprintf(iter, ebuf,"\tsrcfill: %c (0x%x)\n",
+                ktest.srcfill, ktest.srcfill);
+        iter = seprintf(iter, ebuf,"\tdstfill: %c (0x%x)\n",
+                ktest.dstfill, ktest.dstfill);
+        iter = seprintf(iter, ebuf,"\tsrc_str (after copy): %s\n", ktest.src);
+        iter = seprintf(iter, ebuf,"\tdst_str (after copy): %s\n", ktest.dst);
+
+        return readstr(offset, va, n, ktest.printbuf);
 }
 
 #if 0
@@ -888,6 +868,11 @@ void cbdmainit(void) {
 
         /* initialize channel(s) */
         init_channel(&channel0, 0, NDESC);
+
+        /* setup ktest struct */
+        ktest.done    = false;
+        ktest.srcfill = '1';
+        ktest.dstfill = '0';
 }
 
 struct dev cbdmadevtab __devtab = {
