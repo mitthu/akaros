@@ -387,6 +387,9 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
+        /* old desc */
+        memset((uint64_t *)channel0.status, 0, sizeof(channel0.status));
+
         /* get updated: DMACOUNT */
         // value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
         // printk("\tDMACOUNT: 0x%x\n", value);
@@ -405,10 +408,6 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         /* wait for completion */
         while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
                 == IOAT_CHANSTS_ACTIVE) { }
-
-
-        /* write locate of first desc to register CHAINADDR */
-        write64(0, mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* clear out DMACOUNT */
         // value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
