@@ -40,10 +40,11 @@
  * TODO
  * ====
  * *MAJOR*
+ *   - Update to the correct struct desc (from Linux kernel)
+ *   - Make the status field embedded in the channel struct (no ptr business)
+ *   - Add file for errors
  *   - Add locks to guard desc access
- *   - Configure and handle interrupts
  *   - Need for a debug file?
- *   - Add multiple descriptors for multiple writes (for later use)
  *   - Add file for errors
  * *MINOR*
  *   - In stats print the total numer of desc
