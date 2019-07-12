@@ -66,7 +66,7 @@
 #include <arch/pci_regs.h>
 
 #define NDESC 1 // initialize these many descs
-#define IOMMU_ENABLE false
+// #define IOMMU_ON
 
 struct dev                cbdmadevtab;
 static struct pci_device  *pci;
@@ -401,6 +401,12 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         /* old desc */
         memset((uint64_t *)channel0.status, 0, sizeof(channel0.status));
 
+        /* Set channel completion register where CBDMA will write content of
+         * CHANSTS register upon successful DMA completion or error condition
+         */
+        write64(PADDR(channel0.status),
+                get_register(&channel0, IOAT_CHANCMP_OFFSET));
+
         /* get updated: DMACOUNT */
         // value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
         // printk("\tDMACOUNT: 0x%x\n", value);
@@ -465,16 +471,22 @@ done:
 /* convert a userspace pointer to kaddr based pointer */
 static inline void *uptr_to_kptr(void *ptr)
 {
-        return (void *) uva2kva(current, ptr, sizeof(ptr), PROT_WRITE);
+        return (void *) uva2kva(current, ptr, 1, PROT_WRITE);
 }
 
-/* function that uses kernel addresses to perform DMA */
+/* function that uses kernel addresses to perform DMA.
+   NOTE: does not perform error checks for src / dest addr.
+ */
 static void issue_dma_kaddr(struct ucbdma *u) {
-        struct desc *d;
+        struct ucbdma *_u = uptr_to_kptr(u);
+        struct desc *d = (struct desc *) _u; /* first field is struct desc */
         uint64_t value;
 
-        d = uptr_to_kptr(&(u->desc));
-        printk("[kern] ucbdma: user: %p kern: %p\n", u, d);
+        if (!_u) {
+                printk("[kern] cannot get kaddr for useraddr: %p\n", u);
+                return;
+        }
+        printk("[kern] ucbdma: user: %p kern: %p\n", u, _u);
  
         /* preparing descriptors */
         d->src_addr             = (uint64_t) PADDR(uptr_to_kptr((void*) d->src_addr));
@@ -482,17 +494,23 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
-        /* old desc */
-        memset((uint64_t *)channel0.status, 0, sizeof(channel0.status));
+        /* zero out status */
+        _u->status = 0;
+
+        /* Set channel completion register where CBDMA will write content of
+         * CHANSTS register upon successful DMA completion or error condition
+         */
+        write64(PADDR(&_u->status),
+                get_register(&channel0, IOAT_CHANCMP_OFFSET));
 
         /* write locate of first desc to register CHAINADDR */
         write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* writing valid number of descs: starts the DMA */
-        write16(u->ndesc, mmio + CBDMA_DMACOUNT_OFFSET);
+        write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
 
         /* wait for completion */
-        while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
+        while (((_u->status) & IOAT_CHANSTS_STATUS)
                 == IOAT_CHANSTS_ACTIVE) { }
 
         /* clear out DMACOUNT */
@@ -503,9 +521,52 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         if (value != 0)
                 printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
         pcidev_write32(pci, CHANERR_INT, value);
+}
 
-        /* copy status for userspace */
-        u->status = *(uint64_t *) channel0.status; /* TODO: lock or atomic operation */
+/* function that uses virtual (process) addresses to perform DMA; IOMMU = ON
+   TODO: Verify once the IOMMU is setup and enabled.
+*/
+static void issue_dma_vaddr(struct ucbdma *u) {
+        struct ucbdma *_u = uptr_to_kptr(u);
+        struct desc *d = (struct desc *) u;
+        uint64_t value;
+
+        printk("[kern] IOMMU = ON\n");
+
+        d = &u->desc;
+        printk("[kern] ucbdma: user: %p kern: %p\n", u, d);
+ 
+        /* preparing descriptors */
+        _u->desc.descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
+                                  CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
+
+        /* zero out status */
+        _u->status = 0;
+
+        /* Set channel completion register where CBDMA will write content of
+         * CHANSTS register upon successful DMA completion or error condition
+         */
+        write64((uint64_t) &_u->status,
+                get_register(&channel0, IOAT_CHANCMP_OFFSET));
+
+        /* write locate of first desc to register CHAINADDR */
+        write64((uint64_t) d, mmio + CBDMA_CHAINADDR_OFFSET);
+
+        /* writing valid number of descs: starts the DMA */
+        write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        /* wait for completion */
+        while (((_u->status) & IOAT_CHANSTS_STATUS)
+                == IOAT_CHANSTS_ACTIVE) { }
+
+        /* clear out DMACOUNT */
+        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        /* ack errors */
+        value = pcidev_read32(pci, CHANERR_INT);
+        if (value != 0)
+                printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
+        pcidev_write32(pci, CHANERR_INT, value);
 }
 
 #if 0
@@ -900,11 +961,15 @@ static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
 
         case Qcbdmaucopy:
                 if (offset == 0 && n > 0) {
-                        printk("[kern] Value from userspace: %p\n", *(uint64_t *)va);
-                        issue_dma_kaddr((struct ucbdma *)*(uint64_t *)va);
-                } else
-                        error(EINVAL, ERROR_FIXME);
-                return n;
+                        printk("[kern] value from userspace: %p\n", va);
+                #if defined(IOMMU_ON)
+                        issue_dma_vaddr(va);
+                #else
+                        issue_dma_kaddr(va);
+                #endif
+                        return sizeof(8);
+                }
+                return 0;
 
         default:
                 panic("cbdmawrite: qid 0x%x is impossible", c->qid.path);
