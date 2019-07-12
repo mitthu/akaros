@@ -66,7 +66,6 @@
 #include <arch/pci_regs.h>
 
 #define NDESC 1 // initialize these many descs
-// #define IOMMU_ON
 
 struct dev                cbdmadevtab;
 static struct pci_device  *pci;
@@ -74,6 +73,7 @@ static void               *mmio;
 static uint64_t           mmio_phy; /* physical addr */
 static uint32_t           mmio_sz;
 static uint8_t            chancnt; /* Total number of channels per function */
+static bool               iommu_enabled = false;
 
 /* PCIe Config Space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
 enum {
@@ -99,6 +99,7 @@ enum {
         Qcbdmastats    = 2,
         Qcbdmareset    = 3,
         Qcbdmaucopy    = 4,
+        Qcbdmaiommu    = 5,
 };
 
 static struct dirtab cbdmadir[] = {
@@ -107,6 +108,7 @@ static struct dirtab cbdmadir[] = {
         {"stats",     {Qcbdmastats, 0, QTFILE}, 0, 0555},
         {"reset",     {Qcbdmareset, 0, QTFILE}, 0, 0755},
         {"ucopy",     {Qcbdmaucopy, 0, QTFILE}, 0, 0755},
+        {"iommu",     {Qcbdmaiommu, 0, QTFILE}, 0, 0755},
 };
 
 /* Descriptor structue as defined in the programmer's guide.
@@ -868,6 +870,10 @@ static bool cbdma_is_reset_pending() {
 }
 
 static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
+        char buf[4096]; /* TODO: parameterize size */
+        char *ebuf = buf + sizeof(buf);
+        char *iter = buf;
+
         switch (c->qid.path) {
         case Qdir:
                 return devdirread(c, va, n, cbdmadir,
@@ -892,6 +898,15 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
         case Qcbdmaucopy:
                 return readstr(offset, va, n,
                         "Write address of struct ucopy to issue DMA.\n");
+
+        case Qcbdmaiommu:
+                iter = seprintf(iter, ebuf,
+                        "IOMMU enabled = %s || ", iommu_enabled ? "yes":"no");
+                iter = seprintf(iter, ebuf,
+                        "write '0' to disable or '1' to enable the IOMMU\n");
+
+                // printk("cbdma: iommu = %s\n", iommu_enabled ? "yes":"no");
+                return readstr(offset, va, n, buf);
 
         default:
                 panic("cbdmaread: qid 0x%x is impossible", c->qid.path);
@@ -962,14 +977,24 @@ static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
         case Qcbdmaucopy:
                 if (offset == 0 && n > 0) {
                         printk("[kern] value from userspace: %p\n", va);
-                #if defined(IOMMU_ON)
-                        issue_dma_vaddr(va);
-                #else
-                        issue_dma_kaddr(va);
-                #endif
+
+                        if (iommu_enabled)
+                                issue_dma_vaddr(va);
+                        else
+                                issue_dma_kaddr(va);
+                        
                         return sizeof(8);
                 }
                 return 0;
+
+        case Qcbdmaiommu:
+                if (offset == 0 && n > 0 && *(char *)va == '1')
+                        iommu_enabled = true;
+                else if (offset == 0 && n > 0 && *(char *)va == '0')
+                        iommu_enabled = false;
+                else
+                        error(EINVAL, "cannot be empty string");
+                return n;
 
         default:
                 panic("cbdmawrite: qid 0x%x is impossible", c->qid.path);
