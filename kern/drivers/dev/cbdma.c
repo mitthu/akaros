@@ -66,6 +66,7 @@
 #include <arch/pci_regs.h>
 
 #define NDESC 1 // initialize these many descs
+#define IOMMU_ENABLE false
 
 struct dev                cbdmadevtab;
 static struct pci_device  *pci;
@@ -97,6 +98,7 @@ enum {
         Qcbdmaktest    = 1,
         Qcbdmastats    = 2,
         Qcbdmareset    = 3,
+        Qcbdmaucopy    = 4,
 };
 
 static struct dirtab cbdmadir[] = {
@@ -104,6 +106,7 @@ static struct dirtab cbdmadir[] = {
         {"ktest",     {Qcbdmaktest, 0, QTFILE}, 0, 0755},
         {"stats",     {Qcbdmastats, 0, QTFILE}, 0, 0555},
         {"reset",     {Qcbdmareset, 0, QTFILE}, 0, 0755},
+        {"ucopy",     {Qcbdmaucopy, 0, QTFILE}, 0, 0755},
 };
 
 /* Descriptor structue as defined in the programmer's guide.
@@ -151,6 +154,13 @@ static struct {
         char    srcfill;
         char    dstfill;
 } ktest;    /* TODO: needs locking */
+
+/* struct passed from the userspace */
+struct ucbdma {
+        struct desc             desc;
+        volatile uint64_t       status;
+        uint16_t                ndesc;
+};
 
 #if 0
 /* Helper functions */
@@ -450,6 +460,52 @@ done:
         iter = seprintf(iter, ebuf,"\tdst_str (after copy): %s\n", ktest.dst);
 
         return readstr(offset, va, n, ktest.printbuf);
+}
+
+/* convert a userspace pointer to kaddr based pointer */
+static inline void *uptr_to_kptr(void *ptr)
+{
+        return (void *) uva2kva(current, ptr, sizeof(ptr), PROT_WRITE);
+}
+
+/* function that uses kernel addresses to perform DMA */
+static void issue_dma_kaddr(struct ucbdma *u) {
+        struct desc *d;
+        uint64_t value;
+
+        d = uptr_to_kptr(&(u->desc));
+        printk("[kern] ucbdma: user: %p kern: %p\n", u, d);
+ 
+        /* preparing descriptors */
+        d->src_addr             = (uint64_t) PADDR(uptr_to_kptr((void*) d->src_addr));
+        d->dest_addr            = (uint64_t) PADDR(uptr_to_kptr((void*) d->dest_addr));
+        d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
+                                  CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
+
+        /* old desc */
+        memset((uint64_t *)channel0.status, 0, sizeof(channel0.status));
+
+        /* write locate of first desc to register CHAINADDR */
+        write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
+
+        /* writing valid number of descs: starts the DMA */
+        write16(u->ndesc, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        /* wait for completion */
+        while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
+                == IOAT_CHANSTS_ACTIVE) { }
+
+        /* clear out DMACOUNT */
+        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+
+        /* ack errors */
+        value = pcidev_read32(pci, CHANERR_INT);
+        if (value != 0)
+                printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
+        pcidev_write32(pci, CHANERR_INT, value);
+
+        /* copy status for userspace */
+        u->status = *(uint64_t *) channel0.status; /* TODO: lock or atomic operation */
 }
 
 #if 0
@@ -772,6 +828,10 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
                                 "Status: Active\n"
                                 "Write '1' to perform reset!\n");
 
+        case Qcbdmaucopy:
+                return readstr(offset, va, n,
+                        "Write address of struct ucopy to issue DMA.\n");
+
         default:
                 panic("cbdmaread: qid 0x%x is impossible", c->qid.path);
         }
@@ -836,6 +896,14 @@ static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
                         init_channel(&channel0, 0, NDESC);
                 } else
                         error(EINVAL, "cannot be empty string");
+                return n;
+
+        case Qcbdmaucopy:
+                if (offset == 0 && n > 0) {
+                        printk("[kern] Value from userspace: %p\n", *(uint64_t *)va);
+                        issue_dma_kaddr((struct ucbdma *)*(uint64_t *)va);
+                } else
+                        error(EINVAL, ERROR_FIXME);
                 return n;
 
         default:
