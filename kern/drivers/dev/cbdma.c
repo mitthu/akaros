@@ -50,6 +50,7 @@
  *   - In stats print the total numer of desc
  *   - Replace all CBDMA_* constants with IOAT_*
  *   - Remove repeated cbdma_regs.h header file
+ *   - Initializes only the first found CBDMA device
  */
 
 #include <kmalloc.h>
@@ -100,6 +101,11 @@ enum {
         Qcbdmareset    = 3,
         Qcbdmaucopy    = 4,
         Qcbdmaiommu    = 5,
+};
+
+/* supported ioat devices */
+enum {
+        ioat2021 = (0x2021 << 16) | 0x8086,
 };
 
 static struct dirtab cbdmadir[] = {
@@ -1020,19 +1026,31 @@ static void cbdma_interrupt(struct hw_trapframe *hw_tf, void *arg)
 }
 
 void cbdmainit(void) {
-        int tbdf        = MKBUS(BusPCI, 0, 0x4, 0);
         pci             = NULL;
         mmio            = NULL;
         mmio_sz         = -1;
+        int tbdf;
         int i;
+        int id;
+        struct pci_device *pci_iter;
 
         /* initialize cbdmadev */
         memset(&cbdmadev, 0x0, sizeof(cbdmadev));
 
         /* search for the device 00:04.0 */
-        pci = pci_match_tbdf(tbdf);
+        STAILQ_FOREACH (pci_iter, &pci_devices, all_dev) {
+                id = pci_iter->dev_id << 16 | pci_iter->ven_id;
+                switch (id) {
+                default:
+                        continue;
+                case ioat2021:
+                        pci = pci_iter;
+                        break;
+                }
+        }
+
         if (pci == NULL) {
-                error(EINVAL, "cbdma: Intel CBDMA PCI device not found\n");
+                printk("cbdma: no Intel CBDMA device found\n");
                 return;
         }
 
@@ -1069,6 +1087,8 @@ void cbdmainit(void) {
                 "mmio:%p mmio_sz:%lu\n",
                 pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func,
                 mmio, mmio_sz);
+        
+        tbdf = MKBUS(BusPCI, pci->bus, pci->dev, pci->func);
         register_irq(pci->irqline, cbdma_interrupt, NULL, tbdf);
 
         /* reset device */
