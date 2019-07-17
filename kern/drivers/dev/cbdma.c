@@ -222,6 +222,13 @@ static void write_64(char *base, int offset, uint64_t value) {
 #endif
 
 /* Function definitions start here */
+static inline bool is_initialized() {
+        if (!pci || !mmio)
+                return false;
+        else
+                return true;
+}
+
 static void *get_register(struct channel *c, int offset) {
         uint64_t base = (c->number + 1) * IOAT_CHANNEL_MMIO_SIZE;
         printk("cbdma: get_register: offset = 0x%x addr = 0x%x\n",
@@ -383,6 +390,9 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         bool did_run;
         uint64_t value;
 
+        if (!is_initialized())
+                return readstr(offset, va, n, "no device registered\n");
+
         /* check for previously initialed ktest */
         if(ktest.done) {
                 did_run = false;
@@ -490,6 +500,11 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         struct desc *d = (struct desc *) _u; /* first field is struct desc */
         uint64_t value;
 
+        if (!is_initialized()) {
+                printk("cbdma: issue_dma_kaddr: no device registered\n");
+                return;
+        }
+
         if (!_u) {
                 printk("[kern] cannot get kaddr for useraddr: %p\n", u);
                 return;
@@ -538,6 +553,11 @@ static void issue_dma_vaddr(struct ucbdma *u) {
         struct ucbdma *_u = uptr_to_kptr(u);
         struct desc *d = (struct desc *) u;
         uint64_t value;
+
+        if (!is_initialized()) {
+                printk("cbdma: issue_dma_vaddr: no device registered\n");
+                return;
+        }
 
         printk("[kern] IOMMU = ON\n");
 
@@ -693,6 +713,9 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
         uint64_t value;
         const uint8_t width = 20; /* width of register name column */
 
+        if (!is_initialized())
+                return readstr(offset, va, n, "no device registered\n");
+
         iter = seprintf(iter, ebuf,
                 "Intel CBDMA [%x:%x] registered at %02x:%02x.%x\n",
                 pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func);
@@ -820,11 +843,11 @@ static void cbdma_reset_device() {
         uint32_t error;
 
         /* make sure the driver is initialized */
-        if (!mmio) {
-                error(EPERM, "cbdma: mmio addr not set");
-                return; /* does not reach */
+         if (!is_initialized()) {
+                printk("cbdma: cbdma_reset_device: no device registered\n");
+                return;
         }
- 
+
         pcidev_write16(pci, PCI_COMMAND, PCI_COMMAND_IO | PCI_COMMAND_MEMORY
                                                         | PCI_COMMAND_MASTER);
         /* fetch version */
@@ -861,9 +884,9 @@ static bool cbdma_is_reset_pending() {
         int status;
 
         /* make sure the driver is initialized */
-        if (!mmio) {
-                error(EPERM, "cbdma: mmio addr not set");
-                return false; /* does not reach */
+         if (!is_initialized()) {
+                printk("cbdma: cbdma_is_reset_pending: no device registered\n");
+                return false;
         }
 
         /* fetch version */
@@ -911,7 +934,6 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
                 iter = seprintf(iter, ebuf,
                         "write '0' to disable or '1' to enable the IOMMU\n");
 
-                // printk("cbdma: iommu = %s\n", iommu_enabled ? "yes":"no");
                 return readstr(offset, va, n, buf);
 
         default:
@@ -922,6 +944,11 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
 }
 
 static void init_channel(struct channel *c, int cnum, int ndesc) {
+        if (!is_initialized()) {
+                printk("cbdma: init_channel: no device registered\n");
+                return;
+        }
+
         c->number = cnum;
         c->pdesc = NULL;
         init_desc(c, ndesc);
