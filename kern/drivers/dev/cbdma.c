@@ -222,6 +222,13 @@ static void write_64(char *base, int offset, uint64_t value) {
 #endif
 
 /* Function definitions start here */
+static inline bool is_initialized() {
+        if (!pci || !mmio)
+                return false;
+        else
+                return true;
+}
+
 static void *get_register(struct channel *c, int offset) {
         uint64_t base = (c->number + 1) * IOAT_CHANNEL_MMIO_SIZE;
         printk("cbdma: get_register: offset = 0x%x addr = 0x%x\n",
@@ -234,6 +241,8 @@ static char *devname(void) {
 }
 
 static struct chan *cbdmaattach(char *spec) {
+        if (!is_initialized())
+                error(ENODEV, "no cbdma device detected");
         return devattach(devname(), spec);
 }
 
