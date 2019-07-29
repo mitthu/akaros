@@ -38,7 +38,7 @@ static struct chan *dummyattach(char *spec) {
         return devattach(devname(), spec);
 }
 
-struct walkqid *dummywalk(struct chan *c, struct chan *nc, char **name,
+static struct walkqid *dummywalk(struct chan *c, struct chan *nc, char **name,
                          unsigned int nname) {
         if (c->qid.path == Qdirdir || c->qid.path == Qdummysomefile)
                 return devwalk(c, nc, name, nname, dummydirdir,
