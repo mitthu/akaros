@@ -7,7 +7,13 @@
 #include <error.h>
 #include <net/ip.h>
 
-#define DEBUG
+#include <acpi.h>
+#include <arch/intel-iommu.h>
+#include <env.h>
+#include <arch/pci.h>
+#include <linux_compat.h>
+
+#define IOMMU "iommu: "
 
 struct dev iommudevtab;
 
@@ -25,6 +31,100 @@ static struct dirtab iommudir[] = {
         {"add_dev",             {Qadddev, 0, QTFILE}, 0, 0555},
         {"remove_dev",          {Qremovedev, 0, QTFILE}, 0, 0555},
 };
+
+
+/////// START: ROOT TABLE //////////////////////////////////////////////////////
+// TODO: find the regspace for the current device; currently returns the first
+/* Find the reg space associated with the device.
+ */
+static uintptr_t _get_regspace(struct pci_device *p)
+{
+        struct Dmar *dt;
+
+        /* dmar is a global variable. see acpi.h */
+        if (dmar == NULL) {
+                printk(IOMMU "DMAR not found\n");
+                return 0;
+        }
+
+        dt = dmar->tbl;
+        for (int i = 0; i < dmar->nchildren; i++) {
+                struct Atable *at = dmar->children[i];
+                struct Drhd *drhd = at->tbl;
+
+                return drhd->rba;
+        }
+
+        return 0;
+}
+
+/////// END: ROOT TABLE ////////////////////////////////////////////////////////
+
+
+/* Helpers for set/get/init PCI device (BDF) <=> Process map */
+//////// BEGIN: MAPPING ////////////////////////////////////////////////////////
+/* TODO: Manage regspace in a separate struct. We currently remap the regspace
+with NOCACHE and remove this PTE on deletion. For multiple devices we will want
+to manage it differently.
+*/
+static struct mapping {
+    struct pci_device *device;
+    struct proc *process;
+    uintptr_t regspace;
+} map;
+
+static uintptr_t get_regspace(struct pci_device *device)
+{
+        uintptr_t tmp;
+        tmp = _get_regspace(device);
+        if (!tmp) {
+                printk(IOMMU "no regspace for pci device\n");
+                return 0;
+        }
+
+        return vmap_pmem_nocache(tmp, VTD_PAGE_SIZE);
+}
+
+static struct mapping *add_map_dev(struct pci_device *device,
+                                         struct proc *process)
+{
+        map.device = device;
+        map.process = process;
+
+        return &map;
+}
+
+static struct mapping *add_map_bdf(int bus, int dev, int func,
+                                         struct proc *process)
+{
+        int tbdf = MKBUS(BusPCI, bus, dev, func);
+        map.device = pci_match_tbdf(tbdf);
+        if (!map.device) {
+                printk(IOMMU "cannot find dev %x:%x.%x\n", bus, dev, func);
+                return NULL;
+        }
+
+        map.process = process;
+
+        return &map;
+}
+
+/* We just have one entry. However when we have a linked list, we can choose by
+   process. */
+static struct mapping *get_map(struct proc *process)
+{
+        return &map;
+}
+
+static void del_map(struct mapping *m)
+{
+        map.device = NULL;
+        map.process = NULL;
+        if (map.regspace)
+                vunmap_vmem(map.regspace, VTD_PAGE_SIZE);
+}
+/////// END: MAPPING ///////////////////////////////////////////////////////////
+
 
 static char *devname(void)
 {
