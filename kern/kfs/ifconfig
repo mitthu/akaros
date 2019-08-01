@@ -1,11 +1,6 @@
 #!/bin/ash
 
 /bin/bind -b '#cons' /dev
-/bin/bind -b '#pci' /dev
-
-mkdir /cbdma
-/bin/bind -b '#cbdma' /cbdma
-cat /cbdma/stats
 
 NIC=0
 while true; do
