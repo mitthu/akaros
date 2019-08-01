@@ -58,7 +58,8 @@ static uintptr_t _get_regspace(struct pci_device *p)
                 struct Atable *at = dmar->children[i];
                 struct Drhd *drhd = at->tbl;
 
-                return drhd->rba;
+                if (drhd->all & 1 )
+                        return drhd->rba;
         }
 
         return 0;
