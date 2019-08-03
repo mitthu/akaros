@@ -26,6 +26,9 @@
 #define u16 uint16_t
 #define u32 uint32_t
 #define u64 uint64_t
+#define CTX_HI_DID_SHIFT	(8)
+
+extern physaddr_t iommu_rt;
 
 /*
  * VT-d hardware uses 4KiB page size regardless of host page size.
