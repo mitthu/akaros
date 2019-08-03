@@ -95,7 +95,7 @@ static physaddr_t ct_init(uint16_t domain)
 
         for (i = 0; i < 32 * 8; i++, cte++) { // device * func
                 /* initializations such as the domain */
-                cte->hi |= domain << CTX_HI_DID_SHIFT; // DID bit: 72 to 87
+                cte->hi |= (domain << CTX_HI_DID_SHIFT); // DID bit: 72 to 87
                 cte->lo = 0;
         }
 
@@ -118,7 +118,7 @@ static physaddr_t rt_init(uint16_t domain)
         /* create context table */
         for (i = 0; i < 256; i++, rte++) {
                 ct = ct_init(domain);
-                rte->lo = ct | 1UL; // 1UL: is present
+                rte->lo = (ct | 1UL); // 1UL: is present
                 rte->hi = 0;
         }
 
@@ -141,10 +141,10 @@ static int rt_enable(void __iomem *regspace, physaddr_t rt_paddr)
         // TODO: issue TE only once
         cmd = DMA_GCMD_TE | DMA_GCMD_SRTP;
         write32(cmd, regspace + DMAR_GCMD_REG);
-        printk(IOMMU "write cmd: 0x%x\n", cmd);
+        // printk(IOMMU "write cmd: 0x%x\n", cmd);
 
         status = read32(regspace + DMAR_GSTS_REG);
-        printk(IOMMU "raw cmd status: 0x%x\n", status);
+        // printk(IOMMU "raw cmd status: 0x%x\n", status);
 
         printk(IOMMU "translation %s\n",
                 status & DMA_GSTS_TES ? "enabled" : "disabled");
