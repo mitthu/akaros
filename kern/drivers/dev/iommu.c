@@ -1,6 +1,13 @@
 /*
  * File: iommu.c - Driver for accessing Intel iommu
  * Author: Aditya Basu <mitthu@google.com>
+
+ TODO
+ ====
+ - Add a linked list for root-entries corresponding to different PCI domains.
+ - For now, we setup (add to regspace) the IOMMU root entry on every mapping.
+ - Similarly we tear down (remove from regspace) the root entry on deletion of
+ mapping. Note that the in memory paging structures are not deleted.
  */
 
 #include <stdio.h>
@@ -16,11 +23,13 @@
 
 #define IOMMU "iommu: "
 #define BUFFERSZ 4096
+#define PCI_DOMAIN 0
 
 struct dev iommudevtab;
 static spinlock_t iommu_lock;
 static char buf_mappings[BUFFERSZ];
 static char buf_info[BUFFERSZ];
+physaddr_t iommu_rt; // TODO: support multiple root tables based on PCI domains
 
 /* QID Path */
 enum {
@@ -65,6 +74,92 @@ static uintptr_t _get_regspace(struct pci_device *p)
         return 0;
 }
 
+static inline struct root_entry *get_root_entry(physaddr_t paddr)
+{
+        return (struct root_entry *) KADDR(paddr);
+}
+
+static inline struct context_entry *get_context_entry(physaddr_t paddr)
+{
+        return (struct context_entry *) KADDR(paddr);
+}
+
+static physaddr_t ct_init(uint16_t domain)
+{
+        struct context_entry *cte;
+        physaddr_t ct;
+        int i;
+
+        cte = (struct context_entry *) kpage_zalloc_addr();
+        ct = PADDR(cte);
+
+        for (i = 0; i < 32 * 8; i++, cte++) { // device * func
+                /* initializations such as the domain */
+                cte->hi |= domain << CTX_HI_DID_SHIFT; // DID bit: 72 to 87
+                cte->lo = 0;
+        }
+
+        return ct;
+}
+
+/* Get a new root_entry table. Allocates all context entries. */
+static physaddr_t rt_init(uint16_t domain)
+{
+        struct root_entry *rte;
+        physaddr_t rt;
+        uintptr_t ct;
+        int i;
+
+        /* Page Align = 0x1000 */
+        rte = (struct root_entry *) kpage_zalloc_addr();
+        rt = PADDR(rte);
+        // printk(IOMMU "rt returned: %p // %p (phy)\n", rte, rt);
+
+        /* create context table */
+        for (i = 0; i < 256; i++, rte++) {
+                ct = ct_init(domain);
+                rte->lo = ct | 1UL; // 1UL: is present
+                rte->hi = 0;
+        }
+
+        return rt;
+}
+
+static int rt_enable(void __iomem *regspace, physaddr_t rt_paddr)
+{
+        struct root_entry *rt = get_root_entry(rt_paddr);
+        uint32_t cmd = 0, status = 0;
+
+        // write the root table address
+        printk(IOMMU "write rtaddr: value = 0x%x @%p\n", rt_paddr,
+                (uint64_t *) regspace + DMAR_RTADDR_REG);
+
+        write64(rt_paddr, regspace + DMAR_RTADDR_REG);
+
+        // issue command to reload the root table address
+        // TODO: flush IOTLB if reported as necessary by cap register
+        // TODO: issue TE only once
+        cmd = DMA_GCMD_TE | DMA_GCMD_SRTP;
+        write32(cmd, regspace + DMAR_GCMD_REG);
+        printk(IOMMU "write cmd: 0x%x\n", cmd);
+
+        status = read32(regspace + DMAR_GSTS_REG);
+        printk(IOMMU "raw cmd status: 0x%x\n", status);
+
+        printk(IOMMU "translation %s\n",
+                status & DMA_GSTS_TES ? "enabled" : "disabled");
+        printk(IOMMU "root table %s\n",
+                status & DMA_GSTS_TES ? "is set" : "is not set");
+
+        // TODO: return based on values in the register
+        return status;
+}
+
+static void set_pte(int bus, int dev, int func, physaddr_t pg)
+{
+
+}
+
 /////// END: ROOT TABLE ////////////////////////////////////////////////////////
 
 
@@ -77,10 +172,10 @@ to manage it differently.
 static struct mapping {
     struct pci_device *device;
     struct proc *process;
-    uintptr_t regspace;
+    void __iomem *regspace;
 } map;
 
-static uintptr_t get_regspace(struct pci_device *device)
+static void __iomem *get_regspace(struct pci_device *device)
 {
         uintptr_t tmp;
         tmp = _get_regspace(device);
@@ -89,12 +184,22 @@ static uintptr_t get_regspace(struct pci_device *device)
                 return 0;
         }
 
-        return vmap_pmem_nocache(tmp, VTD_PAGE_SIZE);
+        return (void __iomem *) vmap_pmem_nocache(tmp, VTD_PAGE_SIZE);
 }
 
 static struct mapping *add_map_dev(struct pci_device *device,
                                          struct proc *process)
 {
+        if (!device) {
+                printk(IOMMU "cannot find pci dev\n");
+                return NULL;
+        }
+
+        if (!process) {
+                printk(IOMMU "cannot find process\n");
+                return NULL;
+        }
+
         map.device = device;
         map.process = process;
         map.regspace = get_regspace(map.device);
@@ -106,10 +211,9 @@ static struct mapping *add_map_bdf(int bus, int dev, int func,
                                         pid_t pid)
 {
         int tbdf = MKBUS(BusPCI, bus, dev, func);
-        struct pci_device *d;
+        struct pci_device *d = pci_match_tbdf(tbdf);
         struct proc *p = pid2proc(pid);
 
-        d = pci_match_tbdf(tbdf);
         if (!d) {
                 printk(IOMMU "cannot find dev %x:%x.%x\n", bus, dev, func);
                 return NULL;
@@ -120,11 +224,7 @@ static struct mapping *add_map_bdf(int bus, int dev, int func,
                 return NULL;
         }
 
-        map.device = d;
-        map.process = p;
-        map.regspace = get_regspace(map.device);
-
-        return &map;
+        return add_map_dev(d, p);
 }
 
 /* We just have one entry. However when we have a linked list, we can choose by
@@ -138,8 +238,10 @@ static void del_map(struct mapping *m)
 {
         map.device = NULL;
         map.process = NULL;
-        if (map.regspace)
-                vunmap_vmem(map.regspace, VTD_PAGE_SIZE);
+        if (map.regspace) {
+                vunmap_vmem((uintptr_t) map.regspace, VTD_PAGE_SIZE);
+                map.regspace = NULL;
+        }
 }
 
 static bool map_is_empty()
@@ -150,16 +252,6 @@ static bool map_is_empty()
 }
 
 /////// END: MAPPING ///////////////////////////////////////////////////////////
-
-/////// ROOT TABLE /////////////////////////////////////////////////////////////
-
-// TODO: incomplete
-static void rt_init(void)
-{
-        /* Page Align = 0x1000 */
-        kpage_alloc_addr();
-        kmalloc_align(sizeof(uint64_t), MEM_WAIT, 0x1000);
-}
 
 /////// MISC ///////////////////////////////////////////////////////////////////
 static int write_add_dev(char *va, size_t n)
@@ -187,6 +279,9 @@ static int write_add_dev(char *va, size_t n)
                 printk(IOMMU "passthru failed\n");
                 return 0;
         }
+
+        // enable root table
+        rt_enable(m->regspace, iommu_rt);
 
         return n;
 }
@@ -234,6 +329,12 @@ static void open_info(void)
         char *iter = buf_info;
         uint64_t value;
 
+        iter = seprintf(iter, ebuf, "driver info:\n");
+
+        value = PCI_DOMAIN;
+        iter = seprintf(iter, ebuf, "\ttarget PCI domain = %d\n", value);
+        iter = seprintf(iter, ebuf, "\troot table paddr = %p\n", iommu_rt);
+
         iter = seprintf(iter, ebuf, "iommu info:\n");
         if (map_is_empty()){
                 iter = seprintf(iter, ebuf, "\t<none> // map empty\n");
@@ -242,19 +343,20 @@ static void open_info(void)
 
         iter = seprintf(iter, ebuf, "\tregspace@%p\n", map.regspace);
         
-        value = read32((uint32_t *) map.regspace + DMAR_VER_REG);
+        value = 0; value = read32(map.regspace + DMAR_VER_REG);
         iter = seprintf(iter, ebuf, "\tversion = 0x%x\n", value);
 
-        value = read64((uint64_t *) map.regspace + DMAR_CAP_REG);
+
+        value = read64(map.regspace + DMAR_CAP_REG);
         iter = seprintf(iter, ebuf, "\tcapabilities = 0x%x\n", value);
 
-        value = read64((uint64_t *) map.regspace + DMAR_ECAP_REG);
+        value = 0; value = read64(map.regspace + DMAR_ECAP_REG);
         iter = seprintf(iter, ebuf, "\text. capabilities = 0x%x\n", value);
 
-        value = read32((uint32_t *) map.regspace + DMAR_GSTS_REG);
+        value = read32(map.regspace + DMAR_GSTS_REG);
         iter = seprintf(iter, ebuf, "\tglobal status = 0x%x\n", value);
 
-        value = read64((uint64_t *) map.regspace + DMAR_RTADDR_REG);
+        value = read64(map.regspace + DMAR_RTADDR_REG);
         iter = seprintf(iter, ebuf,
                 "\troot entry table = %p (phy) or %p (vir)\n",
                 value, KADDR(value));
@@ -386,6 +488,9 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
 static void iommuinit(void)
 {
         spinlock_init_irqsave(&iommu_lock);
+        iommu_rt = rt_init(PCI_DOMAIN);  // hardcoded for PCI domain = 0
+
+        printk(IOMMU "initialized\n");
 }
 
 struct dev iommudevtab __devtab = {
