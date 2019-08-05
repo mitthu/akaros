@@ -16,7 +16,7 @@
 #include <atomic.h>
 
 #include <acpi.h>
-#include <arch/intel-iommu.h>
+#include <arch/iommu.h>
 #include <env.h>
 #include <arch/pci.h>
 #include <linux_compat.h>
