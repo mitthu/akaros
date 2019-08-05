@@ -226,6 +226,8 @@ void pci_init(void)
 				/* we don't need to lock it til we post the
 				 * pcidev to the list*/
 				spinlock_init_irqsave(&pcidev->lock);
+				pcidev->domain = 0; /* we only discover domain 0
+					when using legacy PCI enumeration */
 				pcidev->bus = i;
 				pcidev->dev = j;
 				pcidev->func = k;
