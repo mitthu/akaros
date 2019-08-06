@@ -88,15 +88,19 @@ static physaddr_t ct_init(uint16_t domain)
 {
         struct context_entry *cte;
         physaddr_t ct;
-        int i;
 
         cte = (struct context_entry *) kpage_zalloc_addr();
         ct = PADDR(cte);
 
-        for (i = 0; i < 32 * 8; i++, cte++) { // device * func
+        for (int i = 0; i < 32 * 8; i++, cte++) { // device * func
                 /* initializations such as the domain */
-                cte->hi |= (domain << CTX_HI_DID_SHIFT); // DID bit: 72 to 87
-                cte->lo = 0;
+                cte->hi = 0
+                        | (domain << CTX_HI_DID_SHIFT) // DID bit: 72 to 87
+                        | (CTX_AW_DEFAULT << CTX_HI_AW_SHIFT); // AW
+                cte->lo = 0
+                        | (0x1 << CTX_LO_PRESET_SHIFT) // is present
+                        | (0x2 << CTX_LO_TRANS_SHIFT) // 0x2: pass through
+                        | (0x1 << CTX_LO_FPD_SHIFT); // disable faults
         }
 
         return ct;
@@ -107,8 +111,7 @@ static physaddr_t rt_init(uint16_t domain)
 {
         struct root_entry *rte;
         physaddr_t rt;
-        uintptr_t ct;
-        int i;
+        physaddr_t ct;
 
         /* Page Align = 0x1000 */
         rte = (struct root_entry *) kpage_zalloc_addr();
@@ -116,10 +119,12 @@ static physaddr_t rt_init(uint16_t domain)
         // printk(IOMMU "rt returned: %p // %p (phy)\n", rte, rt);
 
         /* create context table */
-        for (i = 0; i < 256; i++, rte++) {
+        for (int i = 0; i < 256; i++, rte++) {
                 ct = ct_init(domain);
-                rte->lo = (ct | 1UL); // 1UL: is present
                 rte->hi = 0;
+                rte->lo = 0
+                        | ct
+                        | (0x1 << RT_LO_PRESET_SHIFT);
         }
 
         return rt;
@@ -132,7 +137,7 @@ static int rt_enable(void __iomem *regspace, physaddr_t rt_paddr)
 
         // write the root table address
         printk(IOMMU "write rtaddr: value = 0x%x @%p\n", rt_paddr,
-                (uint64_t *) regspace + DMAR_RTADDR_REG);
+                                                regspace + DMAR_RTADDR_REG);
 
         write64(rt_paddr, regspace + DMAR_RTADDR_REG);
 

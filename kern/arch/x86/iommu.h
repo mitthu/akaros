@@ -22,13 +22,39 @@
 #ifndef _INTEL_IOMMU_H_
 #define _INTEL_IOMMU_H_
 
+#include <atomic.h>
+
 #define u8 uint8_t
 #define u16 uint16_t
 #define u32 uint32_t
 #define u64 uint64_t
-#define CTX_HI_DID_SHIFT	(8)
+
+/* paging: root table entries */
+#define RT_LO_PRESET_SHIFT	0
+
+/* paging: context entries */
+#define CTX_HI_DID_SHIFT	8
+#define CTX_HI_AW_SHIFT		0 // address width
+#define CTX_LO_TRANS_SHIFT	2
+#define CTX_LO_FPD_SHIFT	1
+#define CTX_LO_PRESET_SHIFT	0
+
+#define CTX_AW_L2	0x0 // 2-level page table
+#define CTX_AW_L3	0x1
+#define CTX_AW_L4	0x2
+#define CTX_AW_L5	0x3
+#define CTX_AW_L6	0x4
+#define CTX_AW_DEFAULT	CTX_AW_L3
 
 extern physaddr_t iommu_rt;
+
+struct iommu {
+	spinlock_t iommu_lock;
+	TAILQ_ENTRY(iommu) iommu_link;
+	TAILQ_ENTRY(iommu) proc_link;
+	void *regio;
+	physaddr_t roottable;
+};
 
 /*
  * VT-d hardware uses 4KiB page size regardless of host page size.
