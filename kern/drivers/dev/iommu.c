@@ -31,8 +31,6 @@
 #define BUFFERSZ 4096
 
 struct dev iommudevtab;
-static spinlock_t iommu_lock;
-physaddr_t iommu_rt; // TODO: support multiple root tables based on PCI domains
 struct iommu_list_tq iommu_list = TAILQ_HEAD_INITIALIZER(iommu_list);
 
 /* QID Path */
@@ -481,8 +479,6 @@ static size_t iommustat(struct chan *c, uint8_t *dp, size_t n)
 
 static struct chan *iommuopen(struct chan *c, int omode)
 {
-        spin_lock_irqsave(&iommu_lock);
-
         switch (c->qid.path) {
         case Qmappings:
                 c->synth_buf = open_mappings();
@@ -502,8 +498,6 @@ static struct chan *iommuopen(struct chan *c, int omode)
         default:
                 break;
         }
-
-        spin_unlock_irqsave(&iommu_lock);
 
         return devopen(c, omode, iommudir, ARRAY_SIZE(iommudir), devgen);
 }
@@ -571,8 +565,6 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
 {
         int err = -1;
 
-        spin_lock_irqsave(&iommu_lock);
-
         switch (c->qid.path) {
         case Qadddev:
                 err = write_add_dev(va, n);
@@ -595,8 +587,6 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
                 printk(IOMMU "write: qid %d is impossible\n", c->qid.path);
                 break;
         }
-
-        spin_unlock_irqsave(&iommu_lock);
 
         return err;
 }
@@ -763,9 +753,6 @@ void iommu_initialize(struct iommu *iommu, uint64_t rba)
 
 static void iommuinit(void)
 {
-        spinlock_init_irqsave(&iommu_lock);
-        iommu_rt = rt_init(IOMMU_DID_DEFAULT);  // hardcoded for PCI domain = 0
-
         if (iommu_supported())
                 printk(IOMMU "initialized\n");
         else
