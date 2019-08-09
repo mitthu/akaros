@@ -42,6 +42,7 @@ enum {
         Qadddev      = 2,
         Qremovedev   = 3,
         Qinfo        = 4,
+        Qpower       = 5,
 };
 
 static struct dirtab iommudir[] = {
@@ -50,34 +51,10 @@ static struct dirtab iommudir[] = {
         {"attach",              {Qadddev, 0, QTFILE}, 0, 0755},
         {"detach",              {Qremovedev, 0, QTFILE}, 0, 0755},
         {"info",                {Qinfo, 0, QTFILE}, 0, 0755},
+        {"power",               {Qpower, 0, QTFILE}, 0, 0755},
 };
 
 /////// START: ROOT TABLE //////////////////////////////////////////////////////
-// TODO: find the regspace for the current device; currently returns the first
-/* Find the reg space associated with the device.
- */
-static uintptr_t _get_regspace(struct pci_device *p)
-{
-        struct Dmar *dt;
-
-        /* dmar is a global variable. see acpi.h */
-        if (dmar == NULL) {
-                printk(IOMMU "DMAR not found\n");
-                return 0;
-        }
-
-        dt = dmar->tbl;
-        for (int i = 0; i < dmar->nchildren; i++) {
-                struct Atable *at = dmar->children[i];
-                struct Drhd *drhd = at->tbl;
-
-                if (drhd->all & 1 )
-                        return drhd->rba;
-        }
-
-        return 0;
-}
-
 static inline struct root_entry *get_root_entry(physaddr_t paddr)
 {
         return (struct root_entry *) KADDR(paddr);
@@ -134,34 +111,6 @@ static physaddr_t rt_init(uint16_t did)
         return rt;
 }
 
-static int rt_enable(void __iomem *regspace, physaddr_t rt_paddr)
-{
-        struct root_entry *rt = get_root_entry(rt_paddr);
-        uint32_t cmd = 0, status = 0;
-
-        // write the root table address
-        printk(IOMMU "write rtaddr: value = 0x%x @%p\n", rt_paddr,
-                                                regspace + DMAR_RTADDR_REG);
-
-        write64(rt_paddr, regspace + DMAR_RTADDR_REG);
-
-        // issue command to reload the root table address
-        // TODO: flush IOTLB if reported as necessary by cap register
-        // TODO: issue TE only once
-        cmd = DMA_GCMD_TE | DMA_GCMD_SRTP;
-        write32(cmd, regspace + DMAR_GCMD_REG);
-        // printk(IOMMU "write cmd: 0x%x\n", cmd);
-
-        status = read32(regspace + DMAR_GSTS_REG);
-        // printk(IOMMU "raw cmd status: 0x%x\n", status);
-
-        printk(IOMMU "translation %s\n",
-                status & DMA_GSTS_TES ? "enabled" : "disabled");
-
-        // TODO: return based on values in the register
-        return status;
-}
-
 static void set_pte(int bus, int dev, int func, physaddr_t pg)
 {
 
@@ -169,6 +118,107 @@ static void set_pte(int bus, int dev, int func, physaddr_t pg)
 
 /////// END: ROOT TABLE ////////////////////////////////////////////////////////
 
+/////// START: ENABLE / DISABLE IOMMU //////////////////////////////////////////
+
+static bool _iommu_enable(struct iommu *iommu)
+{
+        uint32_t cmd, status;
+
+        spin_lock_irqsave(&iommu->iommu_lock);
+
+        /* write the root table address */
+        write64(iommu->roottable, iommu->regio + DMAR_RTADDR_REG);
+
+        // TODO: flush IOTLB if reported as necessary by cap register
+        // TODO: issue TE only once
+        /* enable translation and set root table */
+        cmd = DMA_GCMD_TE | DMA_GCMD_SRTP;
+        write32(cmd, iommu->regio + DMAR_GCMD_REG);
+
+        /* read status */
+        status = read32(iommu->regio + DMAR_GSTS_REG);
+
+        spin_unlock_irqsave(&iommu->iommu_lock);
+
+        return status & DMA_GSTS_TES;
+}
+
+void iommu_enable(void)
+{
+        struct iommu *iommu;
+
+        /* races are possible; add a global lock? */
+        if (iommu_status())
+                return;
+
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                _iommu_enable(iommu);
+        }
+}
+
+static bool _iommu_disable(struct iommu *iommu)
+{
+        uint32_t cmd, status;
+
+        spin_lock_irqsave(&iommu->iommu_lock);
+
+        /* write the root table address */
+        write64(iommu->roottable, iommu->regio + DMAR_RTADDR_REG);
+
+        // TODO: flush IOTLB if reported as necessary by cap register
+        // TODO: issue TE only once
+        /* disable translation */
+        cmd = 0;
+        write32(cmd, iommu->regio + DMAR_GCMD_REG);
+
+        /* read status */
+        status = read32(iommu->regio + DMAR_GSTS_REG);
+
+        spin_unlock_irqsave(&iommu->iommu_lock);
+
+        return status & DMA_GSTS_TES;
+}
+
+void iommu_disable(void)
+{
+        struct iommu *iommu;
+
+        /* races are possible; add a global lock? */
+        if (!iommu_status())
+                return;
+
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                _iommu_disable(iommu);
+        }
+}
+
+static bool _iommu_status(struct iommu *iommu)
+{
+        uint32_t status = 0;
+
+        spin_lock_irqsave(&iommu->iommu_lock);
+
+        /* read status */
+        status = read32(iommu->regio + DMAR_GSTS_REG);
+
+        spin_unlock_irqsave(&iommu->iommu_lock);
+
+        return status & DMA_GSTS_TES;
+}
+
+bool iommu_status(void)
+{
+        struct iommu *iommu;
+
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                if(_iommu_status(iommu))
+                        return true;
+        }
+
+        return false;
+}
+
+/////// END: ENABLE / DISABLE IOMMU ////////////////////////////////////////////
 
 /* Helpers for set/get/init PCI device (BDF) <=> Process map */
 //////// BEGIN: MAPPING ////////////////////////////////////////////////////////
@@ -181,18 +231,6 @@ static struct mapping {
     struct proc *process;
     void __iomem *regspace;
 } map;
-
-static void __iomem *get_regspace(struct pci_device *device)
-{
-        uintptr_t tmp;
-        tmp = _get_regspace(device);
-        if (!tmp) {
-                printk(IOMMU "no regspace for pci device\n");
-                return 0;
-        }
-
-        return (void __iomem *) vmap_pmem_nocache(tmp, VTD_PAGE_SIZE);
-}
 
 static struct mapping *add_map_dev(struct pci_device *device,
                                          struct proc *process)
@@ -209,7 +247,7 @@ static struct mapping *add_map_dev(struct pci_device *device,
 
         map.device = device;
         map.process = process;
-        map.regspace = get_regspace(map.device);
+        map.regspace = device->iommu->regio;
 
         return &map;
 }
@@ -289,8 +327,7 @@ static int write_add_dev(char *va, size_t n)
                 return 0;
         }
 
-        // enable root table
-        rt_enable(m->regspace, iommu_rt);
+        // call set_pte()
 
         return n;
 }
@@ -313,6 +350,20 @@ static int write_remove_dev(char *va, size_t n)
         del_map(&map);
 
         return n;
+}
+
+static int write_power(char *va, size_t n)
+{
+        int err;
+
+        if (!strcmp(va, "enable\n") || !strcmp(va, "on\n")) {
+                iommu_enable();
+                return n;
+        } else if (!strcmp(va, "disable\n") || !strcmp(va, "off\n")) {
+                iommu_disable();
+                return n;
+        } else
+                return n;
 }
 
 static struct sized_alloc *open_mappings(void)
@@ -359,7 +410,7 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         sza_printf(sza, "\t\ttranslation: %s\n",
                 value & DMA_GSTS_TES ? "enabled" : "disabled");
         sza_printf(sza, "\t\troot table: %s\n",
-                value & DMA_GSTS_TES ? "set" : "not set");
+                value & DMA_GSTS_RTPS ? "set" : "not set");
 
         value = read64(iommu->regio + DMAR_RTADDR_REG);
         sza_printf(sza, "\troot entry table = %p (phy) or %p (vir)\n",
@@ -376,10 +427,28 @@ static struct sized_alloc *open_info(void)
 
         value = IOMMU_DID_DEFAULT;
         sza_printf(sza, "\tDefault DID = %d\n", value);
+        sza_printf(sza, "\tStatus = %s\n",
+                iommu_status() ? "enabled" : "disabled");
+        sza_printf(sza, "\tForce support = %s\n",
+                IOMMU_FORCE_SUPPORT ? "yes (should be 'no' in prod)" : "no");
 
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
                 _open_info(iommu, sza);
         }
+
+        return sza;
+}
+
+static struct sized_alloc *open_power(void)
+{
+        struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
+        uint64_t value;
+        struct iommu *iommu;
+
+        sza_printf(sza, "IOMMU status: %s\n\n",
+                iommu_status() ? "enabled" : "disabled");
+
+        sza_printf(sza, "Write 'enable\\n' or 'disable\\n' OR 'on\\n' or 'off\\n' to change status\n");
 
         return sza;
 }
@@ -423,6 +492,10 @@ static struct chan *iommuopen(struct chan *c, int omode)
                 c->synth_buf = open_info();
                 break;
 
+        case Qpower:
+                c->synth_buf = open_power();
+                break;
+
         case Qadddev:
         case Qremovedev:
         case Qdir:
@@ -444,6 +517,7 @@ static void iommuclose(struct chan *c)
         switch (c->qid.path) {
         case Qmappings:
         case Qinfo:
+        case Qpower:
                 kfree(c->synth_buf);
                 c->synth_buf = NULL;
                 break;
@@ -465,9 +539,6 @@ static size_t iommuread(struct chan *c, void *va, size_t n, off64_t offset)
                 return devdirread(c, va, n, iommudir,
                                   ARRAY_SIZE(iommudir), devgen);
 
-        case Qmappings:
-                return readstr(offset, va, n, sza->buf);
-
         case Qadddev:
                 return readstr(offset, va, n,
                     "write format: xx:yy.z pid\n"
@@ -484,7 +555,9 @@ static size_t iommuread(struct chan *c, void *va, size_t n, off64_t offset)
                     "example:\n"
                     "$ echo 13 >\\#iommu/detach\n");
 
+        case Qmappings:
         case Qinfo:
+        case Qpower:
                 return readstr(offset, va, n, sza->buf);
 
         default:
@@ -507,6 +580,10 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
 
         case Qremovedev:
                 err = write_remove_dev(va, n);
+                break;
+
+        case Qpower:
+                err = write_power(va, n);
                 break;
 
         case Qmappings:
@@ -609,12 +686,17 @@ void iommu_initialize_global(void)
 {
         /* fill the supported field in struct iommu */
         run_once(iommu_assert_all());
+
+        iommu_enable();
 }
 
 /* should only be called after all iommus are initialized */
 bool iommu_supported(void)
 {
         struct iommu *iommu;
+
+        if (IOMMU_FORCE_SUPPORT) /* for debugging in QEMU */
+                return true;
 
         /* return false if any of the iommus isn't supported  */
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
