@@ -157,8 +157,6 @@ static int rt_enable(void __iomem *regspace, physaddr_t rt_paddr)
 
         printk(IOMMU "translation %s\n",
                 status & DMA_GSTS_TES ? "enabled" : "disabled");
-        printk(IOMMU "root table %s\n",
-                status & DMA_GSTS_TES ? "is set" : "is not set");
 
         // TODO: return based on values in the register
         return status;
@@ -350,9 +348,17 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
 
         value = read64(iommu->regio + DMAR_ECAP_REG);
         sza_printf(sza, "\text. capabilities = %p\n", value);
+        sza_printf(sza, "\t\tpass through: %s\n",
+                ecap_pass_through(value) ? "yes" : "no");
+        sza_printf(sza, "\t\tiotlb: %s\n",
+                ecap_dev_iotlb_support(value) ? "yes" : "no");
 
         value = read32(iommu->regio + DMAR_GSTS_REG);
         sza_printf(sza, "\tglobal status = 0x%x\n", value);
+        sza_printf(sza, "\t\ttranslation: %s\n",
+                value & DMA_GSTS_TES ? "enabled" : "disabled");
+        sza_printf(sza, "\t\troot table: %s\n",
+                value & DMA_GSTS_TES ? "set" : "not set");
 
         value = read64(iommu->regio + DMAR_RTADDR_REG);
         sza_printf(sza, "\troot entry table = %p (phy) or %p (vir)\n",
