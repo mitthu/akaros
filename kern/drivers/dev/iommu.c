@@ -517,6 +517,8 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
         return err;
 }
 
+/////// BEGIN: assertions //////////////////////////////////////////////////////
+
 /* Iterate over all IOMMUs and make sure the "rba" present in DRHD are unique */
 static bool iommu_asset_unique_regio(void)
 {
@@ -538,7 +540,7 @@ static bool iommu_asset_unique_regio(void)
         return result;
 } 
 
-static bool _iommu_supported(struct iommu *iommu)
+static bool iommu_assert_required_capabilities(struct iommu *iommu)
 {
         uint64_t cap, ecap;
         bool support, result;
@@ -550,7 +552,7 @@ static bool _iommu_supported(struct iommu *iommu)
         ecap = read64(iommu->regio + DMAR_ECAP_REG);
         result = true; /* default */
 
-        support = cap_sagaw(cap) & 0x1;
+        support = cap_sagaw(cap) & 0x4;
         if (!support) {
                 printk(IOMMU "%p: 4-level paging not supported\n", iommu);
                 result = false;
@@ -582,19 +584,34 @@ static bool _iommu_supported(struct iommu *iommu)
         return result;
 }
 
-bool iommu_supported(void)
+static void iommu_assert_all(void)
 {
-        bool result;
         struct iommu *iommu;
 
         if (!iommu_asset_unique_regio()) {
                 printk(IOMMU "WARN: same register base addresses detected");
-                return false;
         }
 
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
-                result = _iommu_supported(iommu);
-                if (!result)
+                iommu_assert_required_capabilities(iommu);
+        }
+}
+
+/* Run this function after all individual IOMMUs are initialized. */
+void iommu_initialize_global(void)
+{
+        /* fill the supported field in struct iommu */
+        run_once(iommu_assert_all());
+}
+
+/* should only be called after all iommus are initialized */
+bool iommu_supported(void)
+{
+        struct iommu *iommu;
+
+        /* return false if any of the iommus isn't supported  */
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                if (!iommu->supported)
                         return false;
         }
 
