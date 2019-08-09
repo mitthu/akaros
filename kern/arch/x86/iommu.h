@@ -58,6 +58,7 @@ struct iommu {
 	bool supported; // unused
 
 	void __iomem *regio;
+	uint64_t rba; /* for unique assertion */
 	physaddr_t roottable;
 };
 extern TAILQ_HEAD(iommu_list_tq, iommu) iommu_list;

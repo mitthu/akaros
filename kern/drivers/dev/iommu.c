@@ -338,7 +338,8 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         uint64_t value;
  
         sza_printf(sza, "\niommu@%p\n", iommu);
-        sza_printf(sza, "\tregspace@%p\n", iommu->regio);
+        sza_printf(sza, "\trba = %p\n", iommu->rba);
+        sza_printf(sza, "\tregspace@%p (vir)\n", iommu->regio);
         
         value = read32(iommu->regio + DMAR_VER_REG);
         sza_printf(sza, "\tversion = 0x%x\n", value);
@@ -515,6 +516,22 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
         return err;
 }
 
+/* Iterate over all IOMMUs and make sure the "rba" present in DRHD are unique */
+static bool iommu_asset_unique_regio(void)
+{
+        struct iommu *outer, *inner;
+        uint64_t rba;
+
+        TAILQ_FOREACH(outer, &iommu_list, iommu_link) {
+                rba = outer->rba;
+                TAILQ_FOREACH(inner, &iommu_list, iommu_link) {
+                        if (outer != inner && rba == inner->rba)
+                                return false;
+                }
+        }
+
+        return true;
+} 
 
 static bool _iommu_supported(struct iommu *iommu)
 {
@@ -561,6 +578,11 @@ bool iommu_supported(void)
         bool result;
         struct iommu *iommu;
 
+        if (!iommu_asset_unique_regio()) {
+                printk(IOMMU "WARN: same register base addresses detected");
+                return false;
+        }
+
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
                 result = _iommu_supported(iommu);
                 if (!result)
@@ -572,11 +594,12 @@ bool iommu_supported(void)
 
 /* This is called from acpi.c to initialize struct iommu.
  * The actual IOMMU hardware is not touch or configured in any way. */
-void iommu_initialize(struct iommu *iommu, uintptr_t rba)
+void iommu_initialize(struct iommu *iommu, uint64_t rba)
 {
         /* initilize the struct */
         TAILQ_INIT(&iommu->procs);
         spinlock_init_irqsave(&iommu->iommu_lock);
+        iommu->rba = rba;
         iommu->regio = (void __iomem *) vmap_pmem_nocache(rba, VTD_PAGE_SIZE);
         iommu->roottable = rt_init(IOMMU_DID_DEFAULT);
 
