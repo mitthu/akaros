@@ -64,6 +64,7 @@ struct iommu {
 extern TAILQ_HEAD(iommu_list_tq, iommu) iommu_list;
 
 void iommu_initialize(struct iommu *iommu, uint64_t rba);
+void iommu_initialize_global(void);
 bool iommu_supported(void);
 
 /*
