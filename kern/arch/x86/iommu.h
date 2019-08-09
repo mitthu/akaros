@@ -49,8 +49,6 @@
 
 #define IOMMU_DID_DEFAULT 0
 
-extern physaddr_t iommu_rt;
-
 struct iommu {
 	spinlock_t iommu_lock;
 	TAILQ_ENTRY(iommu) iommu_link;
