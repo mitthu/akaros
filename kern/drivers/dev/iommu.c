@@ -32,8 +32,6 @@
 
 struct dev iommudevtab;
 static spinlock_t iommu_lock;
-static char buf_mappings[BUFFERSZ];
-static char buf_info[BUFFERSZ];
 physaddr_t iommu_rt; // TODO: support multiple root tables based on PCI domains
 struct iommu_list_tq iommu_list = TAILQ_HEAD_INITIALIZER(iommu_list);
 
@@ -319,66 +317,62 @@ static int write_remove_dev(char *va, size_t n)
         return n;
 }
 
-static void open_mappings(void)
+static struct sized_alloc *open_mappings(void)
 {
-        char *ebuf = buf_mappings + sizeof(buf_mappings);
-        char *iter = buf_mappings;
+        struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
 
-        iter = seprintf(iter, ebuf, "mappings:\n");
+        sza_printf(sza, "mappings:\n");
         if (map_is_empty()){
-                iter = seprintf(iter, ebuf, "\t<none>\n");
-                return;
+                sza_printf(sza, "\t<none>\n");
+                return sza;
         }
 
-        iter = seprintf(iter, ebuf, "\tdevice = %x:%x.%x // ",
+        sza_printf(sza, "\tdevice = %x:%x.%x // ",
                 map.device->bus, map.device->dev, map.device->func);
-        iter = seprintf(iter, ebuf, "process = %d\n",
-                map.process->pid);
+        sza_printf(sza, "process = %d\n", map.process->pid);
+        return sza;
 }
 
-static char *_open_info(struct iommu *iommu, char *buf, char *iter, char *ebuf)
+static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
 {
         uint64_t value;
  
-        iter = seprintf(iter, ebuf, "\niommu@%p\n", iommu);
-
-        iter = seprintf(iter, ebuf, "\tregspace@%p\n", iommu->regio);
+        sza_printf(sza, "\niommu@%p\n", iommu);
+        sza_printf(sza, "\tregspace@%p\n", iommu->regio);
         
         value = read32(iommu->regio + DMAR_VER_REG);
-        iter = seprintf(iter, ebuf, "\tversion = 0x%x\n", value);
+        sza_printf(sza, "\tversion = 0x%x\n", value);
 
         value = read64(iommu->regio + DMAR_CAP_REG);
-        iter = seprintf(iter, ebuf, "\tcapabilities = %p\n", value);
+        sza_printf(sza, "\tcapabilities = %p\n", value);
 
         value = read64(iommu->regio + DMAR_ECAP_REG);
-        iter = seprintf(iter, ebuf, "\text. capabilities = %p\n", value);
+        sza_printf(sza, "\text. capabilities = %p\n", value);
 
         value = read32(iommu->regio + DMAR_GSTS_REG);
-        iter = seprintf(iter, ebuf, "\tglobal status = 0x%x\n", value);
+        sza_printf(sza, "\tglobal status = 0x%x\n", value);
 
         value = read64(iommu->regio + DMAR_RTADDR_REG);
-        iter = seprintf(iter, ebuf,
-                "\troot entry table = %p (phy) or %p (vir)\n",
-                value, KADDR(value));
-        return iter;
+        sza_printf(sza, "\troot entry table = %p (phy) or %p (vir)\n",
+                        value, KADDR(value));
 }
 
-static void open_info(void)
+static struct sized_alloc *open_info(void)
 {
-        char *ebuf = buf_info + sizeof(buf_info);
-        char *iter = buf_info;
+        struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
         uint64_t value;
         struct iommu *iommu;
 
-        iter = seprintf(iter, ebuf, "driver info:\n");
+        sza_printf(sza, "Driver info:\n");
 
         value = IOMMU_DID_DEFAULT;
-        iter = seprintf(iter, ebuf, "\ttarget PCI domain = %d\n", value);
-        iter = seprintf(iter, ebuf, "\troot table paddr = %p\n", iommu_rt);
+        sza_printf(sza, "\tDefault DID = %d\n", value);
 
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
-                iter = _open_info(iommu, buf_info, iter, ebuf);
+                _open_info(iommu, sza);
         }
+
+        return sza;
 }
 
 /////// GENERIC ////////////////////////////////////////////////////////////////
@@ -413,11 +407,11 @@ static struct chan *iommuopen(struct chan *c, int omode)
 
         switch (c->qid.path) {
         case Qmappings:
-                open_mappings();
+                c->synth_buf = open_mappings();
                 break;
 
         case Qinfo:
-                open_info();
+                c->synth_buf = open_info();
                 break;
 
         case Qadddev:
@@ -436,19 +430,34 @@ static struct chan *iommuopen(struct chan *c, int omode)
  * All files are synthetic. Hence we do not need to implement any close
  * function.
  */
-static void iommuclose(struct chan *_)
+static void iommuclose(struct chan *c)
 {
+        switch (c->qid.path) {
+        case Qmappings:
+        case Qinfo:
+                kfree(c->synth_buf);
+                c->synth_buf = NULL;
+                break;
+
+        case Qadddev:
+        case Qremovedev:
+        case Qdir:
+        default:
+                break;
+        }
 }
 
 static size_t iommuread(struct chan *c, void *va, size_t n, off64_t offset)
 {
+        struct sized_alloc *sza = c->synth_buf;
+
         switch (c->qid.path) {
         case Qdir:
                 return devdirread(c, va, n, iommudir,
                                   ARRAY_SIZE(iommudir), devgen);
 
         case Qmappings:
-                return readstr(offset, va, n, buf_mappings);
+                return readstr(offset, va, n, sza->buf);
 
         case Qadddev:
                 return readstr(offset, va, n,
@@ -467,7 +476,7 @@ static size_t iommuread(struct chan *c, void *va, size_t n, off64_t offset)
                     "$ echo 13 >\\#iommu/detach\n");
 
         case Qinfo:
-                return readstr(offset, va, n, buf_info);
+                return readstr(offset, va, n, sza->buf);
 
         default:
                 panic(IOMMU "read: qid %d is impossible\n", c->qid.path);
@@ -544,8 +553,6 @@ void iommu_initialize(struct iommu *iommu, uintptr_t rba)
         spinlock_init_irqsave(&iommu->iommu_lock);
         iommu->regio = (void __iomem *) vmap_pmem_nocache(rba, VTD_PAGE_SIZE);
         iommu->roottable = rt_init(IOMMU_DID_DEFAULT);
-
-        I_AM_HERE;
 
         /* add the iommu to the list of all discovered iommu */
         TAILQ_INSERT_TAIL(&iommu_list, iommu, iommu_link);
