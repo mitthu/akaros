@@ -6,6 +6,7 @@
 
 #include <arch/x86.h>
 #include <arch/pci.h>
+#include <arch/iommu.h>
 #include <trap.h>
 #include <stdio.h>
 #include <string.h>
@@ -313,6 +314,7 @@ void pci_init(void)
 			}
 		}
 	}
+	iommu_map_pci_devices();
 }
 
 uint32_t pci_config_addr(uint8_t bus, uint8_t dev, uint8_t func, uint32_t reg)

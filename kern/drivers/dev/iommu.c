@@ -327,7 +327,8 @@ static struct sized_alloc *open_mappings(void)
 
         sza_printf(sza, "\tdevice = %x:%x.%x // ",
                 map.device->bus, map.device->dev, map.device->func);
-        sza_printf(sza, "process = %d\n", map.process->pid);
+        sza_printf(sza, "process = %d // ", map.process->pid);
+        sza_printf(sza, "iommu = %p\n", map.device->iommu);
         return sza;
 }
 
@@ -622,6 +623,44 @@ bool iommu_supported(void)
         }
 
         return true;
+}
+
+/* grabs the iommu of the first DRHD with INCLUDE_PCI_ALL */
+struct iommu *get_default_iommu(void)
+{
+        struct Dmar *dt;
+
+        /* dmar is a global variable; see acpi.h */
+        if (dmar == NULL) {
+                return NULL;
+        }
+
+        dt = dmar->tbl;
+        for (int i = 0; i < dmar->nchildren; i++) {
+                struct Atable *at = dmar->children[i];
+                struct Drhd *drhd = at->tbl;
+
+                if (drhd->all & 1)
+                        return &drhd->iommu;
+        }
+
+        return NULL;
+}
+
+void iommu_map_pci_devices(void)
+{
+        struct pci_device *pci_iter;
+        struct iommu *iommu = get_default_iommu();
+
+        if (!iommu)
+                return;
+
+        /* set the default iommu */
+        STAILQ_FOREACH (pci_iter, &pci_devices, all_dev) {
+                pci_iter->iommu = iommu;
+        }
+
+        // TODO: parse devscope and assign scoped iommus
 }
 
 /* This is called from acpi.c to initialize struct iommu.
