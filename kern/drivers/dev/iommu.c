@@ -338,7 +338,9 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         uint64_t value;
  
         sza_printf(sza, "\niommu@%p\n", iommu);
-        sza_printf(sza, "\tregspace@%p\n", iommu->regio);
+        sza_printf(sza, "\trba = %p\n", iommu->rba);
+        sza_printf(sza, "\tsupported = %s\n", iommu->supported ? "yes" : "no");
+        sza_printf(sza, "\tregspace = %p\n", iommu->regio);
         
         value = read32(iommu->regio + DMAR_VER_REG);
         sza_printf(sza, "\tversion = 0x%x\n", value);
@@ -515,25 +517,80 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
         return err;
 }
 
+/* Iterate over all IOMMUs and make sure the "rba" present in DRHD are unique */
+static bool iommu_asset_unique_regio(void)
+{
+        struct iommu *outer, *inner;
+        uint64_t rba;
+        bool result = true;
+
+        TAILQ_FOREACH(outer, &iommu_list, iommu_link) {
+                rba = outer->rba;
+
+                TAILQ_FOREACH(inner, &iommu_list, iommu_link) {
+                        if (outer != inner && rba == inner->rba) {
+                                outer->supported = false;
+                                result = false;
+                        }
+                }
+        }
+
+        return result;
+} 
 
 static bool _iommu_supported(struct iommu *iommu)
 {
         uint64_t cap, ecap;
-        bool is_supported = true;
+        bool support, result;
 
         if (!iommu || !iommu->regio)
                 return false;
 
         cap = read64(iommu->regio + DMAR_CAP_REG);
         ecap = read64(iommu->regio + DMAR_ECAP_REG);
+        result = true; /* default */
 
-        return is_supported;
+        support = cap_sagaw(cap) & 0x1;
+        if (!support) {
+                printk(IOMMU "%p: 4-level paging not supported\n", iommu);
+                result = false;
+        }
+
+        support = cap_super_page_val(cap) & 0x1;
+        if (!support) {
+                printk(IOMMU "%p: 1GB super pages not supported\n", iommu);
+                result = false;
+        }
+
+        support = ecap_pass_through(ecap);
+        if (!support) {
+                printk(IOMMU "%p: pass-through translation type in context entries not supported\n", iommu);
+                result = false;
+        }
+
+        /* required for '01b' translation type in context entries */
+        support = ecap_dev_iotlb_support(ecap);
+        if (!support) {
+                printk(IOMMU "%p: device IOTLB not supported\n", iommu);
+                result = false;
+        }
+
+        /* mark the iommu as not supported, if any required cap is present */
+        if (!result)
+                iommu->supported = false;
+
+        return result;
 }
 
 bool iommu_supported(void)
 {
         bool result;
         struct iommu *iommu;
+
+        if (!iommu_asset_unique_regio()) {
+                printk(IOMMU "WARN: same register base addresses detected");
+                return false;
+        }
 
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
                 result = _iommu_supported(iommu);
@@ -546,13 +603,15 @@ bool iommu_supported(void)
 
 /* This is called from acpi.c to initialize struct iommu.
  * The actual IOMMU hardware is not touch or configured in any way. */
-void iommu_initialize(struct iommu *iommu, uintptr_t rba)
+void iommu_initialize(struct iommu *iommu, uint64_t rba)
 {
         /* initilize the struct */
         TAILQ_INIT(&iommu->procs);
         spinlock_init_irqsave(&iommu->iommu_lock);
+        iommu->rba = rba;
         iommu->regio = (void __iomem *) vmap_pmem_nocache(rba, VTD_PAGE_SIZE);
         iommu->roottable = rt_init(IOMMU_DID_DEFAULT);
+        iommu->supported = true; /* this gets updated by iommu_supported() */
 
         /* add the iommu to the list of all discovered iommu */
         TAILQ_INSERT_TAIL(&iommu_list, iommu, iommu_link);

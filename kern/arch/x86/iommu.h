@@ -55,14 +55,15 @@ struct iommu {
 	spinlock_t iommu_lock;
 	TAILQ_ENTRY(iommu) iommu_link;
 	struct proc_list procs; // unused
-	bool supported; // unused
+	bool supported;
 
 	void __iomem *regio;
+	uint64_t rba; /* for unique assertion */
 	physaddr_t roottable;
 };
 extern TAILQ_HEAD(iommu_list_tq, iommu) iommu_list;
 
-void iommu_initialize(struct iommu *iommu, uintptr_t rba);
+void iommu_initialize(struct iommu *iommu, uint64_t rba);
 bool iommu_supported(void);
 
 /*
