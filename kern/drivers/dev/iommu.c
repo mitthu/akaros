@@ -4,6 +4,11 @@
 
  TODO
  ====
+ - Disallow attaching #iommu is iommu_supported() returns false
+ - In acpi.c, force parsedmar() in acpiinit()
+ - Decide locking for 'info' and 'mappings' files. Do we use a global lock?
+ - In struct proc, initialize pcidev_stailq during process init.
+
  - Add a linked list for root-entries corresponding to different PCI domains.
  - For now, we setup (add to regspace) the IOMMU root entry on every mapping.
  - Similarly we tear down (remove from regspace) the root entry on deletion of
@@ -12,6 +17,7 @@
 
 #include <stdio.h>
 #include <error.h>
+#include <common.h>
 #include <net/ip.h>
 #include <atomic.h>
 
@@ -23,13 +29,13 @@
 
 #define IOMMU "iommu: "
 #define BUFFERSZ 4096
-#define PCI_DOMAIN 0
 
 struct dev iommudevtab;
 static spinlock_t iommu_lock;
 static char buf_mappings[BUFFERSZ];
 static char buf_info[BUFFERSZ];
 physaddr_t iommu_rt; // TODO: support multiple root tables based on PCI domains
+struct iommu_list_tq iommu_list = TAILQ_HEAD_INITIALIZER(iommu_list);
 
 /* QID Path */
 enum {
@@ -107,7 +113,7 @@ static physaddr_t ct_init(uint16_t domain)
 }
 
 /* Get a new root_entry table. Allocates all context entries. */
-static physaddr_t rt_init(uint16_t domain)
+static physaddr_t rt_init(uint16_t did)
 {
         struct root_entry *rte;
         physaddr_t rt;
@@ -120,7 +126,7 @@ static physaddr_t rt_init(uint16_t domain)
 
         /* create context table */
         for (int i = 0; i < 256; i++, rte++) {
-                ct = ct_init(domain);
+                ct = ct_init(did);
                 rte->hi = 0;
                 rte->lo = 0
                         | ct
@@ -219,16 +225,17 @@ static struct mapping *add_map_bdf(int bus, int dev, int func,
         struct pci_device *d = pci_match_tbdf(tbdf);
         struct proc *p = pid2proc(pid);
 
-        if (!d) {
-                printk(IOMMU "cannot find dev %x:%x.%x\n", bus, dev, func);
-                return NULL;
-        }
-
         if (!p) {
                 printk(IOMMU "cannot find pid %d\n", pid);
                 return NULL;
         }
 
+        if (!d) {
+                printk(IOMMU "cannot find dev %x:%x.%x\n", bus, dev, func);
+                proc_decref(p);
+                return NULL;
+        }
+        
         return add_map_dev(d, p);
 }
 
@@ -242,6 +249,7 @@ static struct mapping *get_map(struct proc *process)
 static void del_map(struct mapping *m)
 {
         map.device = NULL;
+        proc_decref(map.process);
         map.process = NULL;
         if (map.regspace) {
                 vunmap_vmem((uintptr_t) map.regspace, VTD_PAGE_SIZE);
@@ -328,43 +336,49 @@ static void open_mappings(void)
                 map.process->pid);
 }
 
+static char *_open_info(struct iommu *iommu, char *buf, char *iter, char *ebuf)
+{
+        uint64_t value;
+ 
+        iter = seprintf(iter, ebuf, "\niommu@%p\n", iommu);
+
+        iter = seprintf(iter, ebuf, "\tregspace@%p\n", iommu->regio);
+        
+        value = read32(iommu->regio + DMAR_VER_REG);
+        iter = seprintf(iter, ebuf, "\tversion = 0x%x\n", value);
+
+        value = read64(iommu->regio + DMAR_CAP_REG);
+        iter = seprintf(iter, ebuf, "\tcapabilities = %p\n", value);
+
+        value = read64(iommu->regio + DMAR_ECAP_REG);
+        iter = seprintf(iter, ebuf, "\text. capabilities = %p\n", value);
+
+        value = read32(iommu->regio + DMAR_GSTS_REG);
+        iter = seprintf(iter, ebuf, "\tglobal status = 0x%x\n", value);
+
+        value = read64(iommu->regio + DMAR_RTADDR_REG);
+        iter = seprintf(iter, ebuf,
+                "\troot entry table = %p (phy) or %p (vir)\n",
+                value, KADDR(value));
+        return iter;
+}
+
 static void open_info(void)
 {
         char *ebuf = buf_info + sizeof(buf_info);
         char *iter = buf_info;
         uint64_t value;
+        struct iommu *iommu;
 
         iter = seprintf(iter, ebuf, "driver info:\n");
 
-        value = PCI_DOMAIN;
+        value = IOMMU_DID_DEFAULT;
         iter = seprintf(iter, ebuf, "\ttarget PCI domain = %d\n", value);
         iter = seprintf(iter, ebuf, "\troot table paddr = %p\n", iommu_rt);
 
-        iter = seprintf(iter, ebuf, "iommu info:\n");
-        if (map_is_empty()){
-                iter = seprintf(iter, ebuf, "\t<none> // map empty\n");
-                return;
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                iter = _open_info(iommu, buf_info, iter, ebuf);
         }
-
-        iter = seprintf(iter, ebuf, "\tregspace@%p\n", map.regspace);
-        
-        value = 0; value = read32(map.regspace + DMAR_VER_REG);
-        iter = seprintf(iter, ebuf, "\tversion = 0x%x\n", value);
-
-
-        value = read64(map.regspace + DMAR_CAP_REG);
-        iter = seprintf(iter, ebuf, "\tcapabilities = 0x%x\n", value);
-
-        value = 0; value = read64(map.regspace + DMAR_ECAP_REG);
-        iter = seprintf(iter, ebuf, "\text. capabilities = 0x%x\n", value);
-
-        value = read32(map.regspace + DMAR_GSTS_REG);
-        iter = seprintf(iter, ebuf, "\tglobal status = 0x%x\n", value);
-
-        value = read64(map.regspace + DMAR_RTADDR_REG);
-        iter = seprintf(iter, ebuf,
-                "\troot entry table = %p (phy) or %p (vir)\n",
-                value, KADDR(value));
 }
 
 /////// GENERIC ////////////////////////////////////////////////////////////////
@@ -376,6 +390,8 @@ static char *devname(void)
 
 static struct chan *iommuattach(char *spec)
 {
+        // if (!iommu_supported())
+        //         error(ENODEV, IOMMU "not supported");
         return devattach(devname(), spec);
 }
 
@@ -490,12 +506,60 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
         return err;
 }
 
+
+static bool _iommu_supported(struct iommu *iommu)
+{
+        uint64_t cap, ecap;
+        bool is_supported = true;
+
+        if (!iommu || !iommu->regio)
+                return false;
+
+        cap = read64(iommu->regio + DMAR_CAP_REG);
+        ecap = read64(iommu->regio + DMAR_ECAP_REG);
+
+        return is_supported;
+}
+
+bool iommu_supported(void)
+{
+        bool result;
+        struct iommu *iommu;
+
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                result = _iommu_supported(iommu);
+                if (!result)
+                        return false;
+        }
+
+        return true;
+}
+
+/* This is called from acpi.c to initialize struct iommu.
+ * The actual IOMMU hardware is not touch or configured in any way. */
+void iommu_initialize(struct iommu *iommu, uintptr_t rba)
+{
+        /* initilize the struct */
+        TAILQ_INIT(&iommu->procs);
+        spinlock_init_irqsave(&iommu->iommu_lock);
+        iommu->regio = (void __iomem *) vmap_pmem_nocache(rba, VTD_PAGE_SIZE);
+        iommu->roottable = rt_init(IOMMU_DID_DEFAULT);
+
+        I_AM_HERE;
+
+        /* add the iommu to the list of all discovered iommu */
+        TAILQ_INSERT_TAIL(&iommu_list, iommu, iommu_link);
+}
+
 static void iommuinit(void)
 {
         spinlock_init_irqsave(&iommu_lock);
-        iommu_rt = rt_init(PCI_DOMAIN);  // hardcoded for PCI domain = 0
+        iommu_rt = rt_init(IOMMU_DID_DEFAULT);  // hardcoded for PCI domain = 0
 
-        printk(IOMMU "initialized\n");
+        if (iommu_supported())
+                printk(IOMMU "initialized\n");
+        else
+                printk(IOMMU "not supported\n");
 }
 
 struct dev iommudevtab __devtab = {

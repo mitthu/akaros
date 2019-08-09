@@ -23,6 +23,7 @@
 #define _INTEL_IOMMU_H_
 
 #include <atomic.h>
+#include <env.h>
 
 #define u8 uint8_t
 #define u16 uint16_t
@@ -44,17 +45,25 @@
 #define CTX_AW_L4	0x2
 #define CTX_AW_L5	0x3
 #define CTX_AW_L6	0x4
-#define CTX_AW_DEFAULT	CTX_AW_L3
+#define CTX_AW_DEFAULT	CTX_AW_L4
+
+#define IOMMU_DID_DEFAULT 0
 
 extern physaddr_t iommu_rt;
 
 struct iommu {
 	spinlock_t iommu_lock;
 	TAILQ_ENTRY(iommu) iommu_link;
-	TAILQ_ENTRY(iommu) proc_link;
-	void *regio;
+	struct proc_list procs; // unused
+	bool supported; // unused
+
+	void __iomem *regio;
 	physaddr_t roottable;
 };
+extern TAILQ_HEAD(iommu_list_tq, iommu) iommu_list;
+
+void iommu_initialize(struct iommu *iommu, uintptr_t rba);
+bool iommu_supported(void);
 
 /*
  * VT-d hardware uses 4KiB page size regardless of host page size.
