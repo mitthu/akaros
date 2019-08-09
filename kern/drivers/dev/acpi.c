@@ -1310,6 +1310,7 @@ static struct Atable *parsedmar(struct Atable *parent, char *name, uint8_t *raw,
 		finatable_nochildren(tt);
 		slice_append(&drhds, tt);
 	}
+	iommu_initialize_global();
 	dmar = finatable(t, &drhds);
 
 	return dmar;
