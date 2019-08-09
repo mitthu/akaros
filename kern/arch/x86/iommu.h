@@ -48,6 +48,7 @@
 #define CTX_AW_DEFAULT	CTX_AW_L4
 
 #define IOMMU_DID_DEFAULT 0
+#define IOMMU_FORCE_SUPPORT 1 // for debugging in QEMU
 
 struct iommu {
 	spinlock_t iommu_lock;
@@ -66,6 +67,9 @@ void iommu_initialize_global(void);
 void iommu_map_pci_devices(void); /* associate pci devices with correct iommu */
 bool iommu_supported(void);
 struct iommu *get_default_iommu(void); /* IOMMU of DRHD with INCLUDE_PCI_ALL */
+void iommu_enable(void); /* enable all iommus */
+void iommu_disable(void); /* disable all iommus */
+bool iommu_status(void); /* returns true if any iommu is turned on */
 
 /*
  * VT-d hardware uses 4KiB page size regardless of host page size.
