@@ -167,11 +167,13 @@ struct pci_bar {
 };
 
 struct pci_device {
+	STAILQ_ENTRY(pci_device) 	proc;    /* for device passthru */
 	STAILQ_ENTRY(pci_device)	all_dev; /* list of all devices */
 	SLIST_ENTRY(pci_device)		irq_dev; /* list of all devs on irq */
 	char				name[9];
 	spinlock_t			lock;
 	void				*dev_data; /* device private pointer */
+	struct iommu			*iommu; /* ptr to controlling iommu */
 	struct device			device;
 	bool				in_use;	/* prevent double discovery */
 	int				domain; /* legacy size was 16-bits */

@@ -21,6 +21,7 @@
 #include <devalarm.h>
 #include <ns.h>
 #include <arch/vmm/vmm.h>
+#include <arch/pci.h>
 
 TAILQ_HEAD(vcore_tailq, vcore);
 /* 'struct proc_list' declared in sched.h (not ideal...) */
@@ -118,6 +119,7 @@ struct proc {
 	struct vmm vmm;
 
 	struct strace		*strace;
+	struct pcidev_stailq 	pci_devices; /* for device passthru */
 };
 
 /* Til we remove all Env references */
