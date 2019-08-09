@@ -167,7 +167,6 @@ struct pci_bar {
 };
 
 struct pci_device {
-	STAILQ_ENTRY(pci_device) 	proc;    /* for device passthru */
 	STAILQ_ENTRY(pci_device)	all_dev; /* list of all devices */
 	SLIST_ENTRY(pci_device)		irq_dev; /* list of all devs on irq */
 	char				name[9];
@@ -202,6 +201,8 @@ struct pci_device {
 	uintptr_t			msix_pba_vaddr;
 	unsigned int			msix_nr_vec;
 	bool				msix_ready;
+	STAILQ_ENTRY(pci_device) 	proc_link; /* for device passthru */
+	struct proc 			*proc_owner;
 };
 
 struct msix_entry {
