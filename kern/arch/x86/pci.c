@@ -292,6 +292,7 @@ void pci_init(void)
 				 * header. */
 				if (pcidev_read8(pcidev, PCI_HEADER_REG) & 0x80)
 					max_nr_func = PCI_MAX_FUNC;
+				pcidev->proc_owner = NULL;
 			}
 		}
 	}
