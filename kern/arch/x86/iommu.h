@@ -63,7 +63,9 @@ extern TAILQ_HEAD(iommu_list_tq, iommu) iommu_list;
 
 void iommu_initialize(struct iommu *iommu, uint64_t rba);
 void iommu_initialize_global(void);
+void iommu_map_pci_devices(void); /* associate pci devices with correct iommu */
 bool iommu_supported(void);
+struct iommu *get_default_iommu(void); /* IOMMU of DRHD with INCLUDE_PCI_ALL */
 
 /*
  * VT-d hardware uses 4KiB page size regardless of host page size.
