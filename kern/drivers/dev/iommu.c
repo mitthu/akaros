@@ -519,15 +519,41 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
 static bool _iommu_supported(struct iommu *iommu)
 {
         uint64_t cap, ecap;
-        bool is_supported = true;
+        bool support, result;
 
         if (!iommu || !iommu->regio)
                 return false;
 
         cap = read64(iommu->regio + DMAR_CAP_REG);
         ecap = read64(iommu->regio + DMAR_ECAP_REG);
+        result = true; /* default */
 
-        return is_supported;
+        support = cap_sagaw(cap) & 0x1;
+        if (!support) {
+                printk(IOMMU "%p: 4-level paging not supported\n", iommu);
+                result = false;
+        }
+
+        support = cap_super_page_val(cap) & 0x1;
+        if (!support) {
+                printk(IOMMU "%p: 1GB super pages not supported\n", iommu);
+                result = false;
+        }
+
+        support = ecap_pass_through(ecap);
+        if (!support) {
+                printk(IOMMU "%p: pass-through translation type in context entries not supported\n", iommu);
+                result = false;
+        }
+
+        /* required for '01b' translation type in context entries */
+        support = ecap_dev_iotlb_support(ecap);
+        if (!support) {
+                printk(IOMMU "%p: device IOTLB not supported\n", iommu);
+                result = false;
+        }
+
+        return result;
 }
 
 bool iommu_supported(void)
