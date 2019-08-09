@@ -339,7 +339,8 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
  
         sza_printf(sza, "\niommu@%p\n", iommu);
         sza_printf(sza, "\trba = %p\n", iommu->rba);
-        sza_printf(sza, "\tregspace@%p (vir)\n", iommu->regio);
+        sza_printf(sza, "\tsupported = %s\n", iommu->supported ? "yes" : "no");
+        sza_printf(sza, "\tregspace = %p\n", iommu->regio);
         
         value = read32(iommu->regio + DMAR_VER_REG);
         sza_printf(sza, "\tversion = 0x%x\n", value);
@@ -521,16 +522,20 @@ static bool iommu_asset_unique_regio(void)
 {
         struct iommu *outer, *inner;
         uint64_t rba;
+        bool result = true;
 
         TAILQ_FOREACH(outer, &iommu_list, iommu_link) {
                 rba = outer->rba;
+
                 TAILQ_FOREACH(inner, &iommu_list, iommu_link) {
-                        if (outer != inner && rba == inner->rba)
-                                return false;
+                        if (outer != inner && rba == inner->rba) {
+                                outer->supported = false;
+                                result = false;
+                        }
                 }
         }
 
-        return true;
+        return result;
 } 
 
 static bool _iommu_supported(struct iommu *iommu)
@@ -570,6 +575,10 @@ static bool _iommu_supported(struct iommu *iommu)
                 result = false;
         }
 
+        /* mark the iommu as not supported, if any required cap is present */
+        if (!result)
+                iommu->supported = false;
+
         return result;
 }
 
@@ -602,6 +611,7 @@ void iommu_initialize(struct iommu *iommu, uint64_t rba)
         iommu->rba = rba;
         iommu->regio = (void __iomem *) vmap_pmem_nocache(rba, VTD_PAGE_SIZE);
         iommu->roottable = rt_init(IOMMU_DID_DEFAULT);
+        iommu->supported = true; /* this gets updated by iommu_supported() */
 
         /* add the iommu to the list of all discovered iommu */
         TAILQ_INSERT_TAIL(&iommu_list, iommu, iommu_link);
