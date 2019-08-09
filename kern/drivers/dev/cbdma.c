@@ -106,6 +106,7 @@ enum {
 /* supported ioat devices */
 enum {
         ioat2021 = (0x2021 << 16) | 0x8086,
+        ioat2f20 = (0x2f20 << 16) | 0x8086,
 };
 
 static struct dirtab cbdmadir[] = {
@@ -385,6 +386,11 @@ static void init_desc(struct channel *c, int ndesc) {
  - Verify results
  - Print stats
  */ 
+static bool foo;
+void toggle_foo() {
+        foo = !foo;
+        printk("cbdma: foo = %d\n", foo);
+}
 static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         static struct desc *d;
         char *ebuf = ktest.printbuf + sizeof(ktest.printbuf);
@@ -441,7 +447,11 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* wait for completion */
         while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
-                == IOAT_CHANSTS_ACTIVE) { }
+                == IOAT_CHANSTS_ACTIVE) {
+                cpu_relax();
+                if (foo)
+                        break;
+        }
 
         /* clear out DMACOUNT */
         // value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
@@ -528,7 +538,11 @@ static void issue_dma_kaddr(struct ucbdma *u) {
 
         /* wait for completion */
         while (((_u->status) & IOAT_CHANSTS_STATUS)
-                == IOAT_CHANSTS_ACTIVE) { }
+                == IOAT_CHANSTS_ACTIVE) {
+                cpu_relax();
+                if (foo)
+                        break;
+        }
 
         /* clear out DMACOUNT */
         write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
@@ -545,13 +559,11 @@ static void issue_dma_kaddr(struct ucbdma *u) {
 */
 static void issue_dma_vaddr(struct ucbdma *u) {
         struct ucbdma *_u = uptr_to_kptr(u);
-        struct desc *d = (struct desc *) u;
         uint64_t value;
 
         printk("[kern] IOMMU = ON\n");
 
-        d = &u->desc;
-        printk("[kern] ucbdma: user: %p kern: %p\n", u, d);
+        printk("[kern] ucbdma: user: %p kern: %p\n", u, &u->desc);
  
         /* preparing descriptors */
         _u->desc.descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
@@ -563,11 +575,11 @@ static void issue_dma_vaddr(struct ucbdma *u) {
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition
          */
-        write64((uint64_t) &_u->status,
+        write64((uint64_t) &u->status,
                 get_register(&channel0, IOAT_CHANCMP_OFFSET));
 
         /* write locate of first desc to register CHAINADDR */
-        write64((uint64_t) d, mmio + CBDMA_CHAINADDR_OFFSET);
+        write64((uint64_t) &u->desc, mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* writing valid number of descs: starts the DMA */
         write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
@@ -1053,6 +1065,10 @@ void cbdmainit(void) {
                 default:
                         continue;
                 case ioat2021:
+                case ioat2f20:
+                        /* dirty hack: bus 0 is the PCI_ALL iommu */
+                        if (pci_iter->bus != 0)
+                                continue;
                         pci = pci_iter;
                         break;
                 }
