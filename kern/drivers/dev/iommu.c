@@ -4,15 +4,8 @@
 
  TODO
  ====
- - Disallow attaching #iommu is iommu_supported() returns false
- - In acpi.c, force parsedmar() in acpiinit()
- - Decide locking for 'info' and 'mappings' files. Do we use a global lock?
- - In struct proc, initialize pcidev_stailq during process init.
-
- - Add a linked list for root-entries corresponding to different PCI domains.
- - For now, we setup (add to regspace) the IOMMU root entry on every mapping.
- - Similarly we tear down (remove from regspace) the root entry on deletion of
- mapping. Note that the in memory paging structures are not deleted.
+ - In iommu_map_pci_devices() assign the correct iommu for scoped DRHD. Right
+ now the default iommu is assigned to all devices.
  */
 
 #include <stdio.h>
