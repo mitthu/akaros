@@ -200,7 +200,7 @@ struct pci_device {
 	uintptr_t			msix_pba_vaddr;
 	unsigned int			msix_nr_vec;
 	bool				msix_ready;
-	STAILQ_ENTRY(pci_device) 	proc_link; /* for device passthru */
+	TAILQ_ENTRY(pci_device) 	proc_link; /* for device passthru */
 	struct proc 			*proc_owner;
 };
 
@@ -217,6 +217,7 @@ struct msix_irq_vector {
 };
 
 /* List of all discovered devices */
+TAILQ_HEAD(pcidev_tq, pci_device);
 STAILQ_HEAD(pcidev_stailq, pci_device);
 extern struct pcidev_stailq pci_devices;
 
