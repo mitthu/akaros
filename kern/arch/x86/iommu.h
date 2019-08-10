@@ -71,6 +71,8 @@ struct iommu *get_default_iommu(void); /* IOMMU of DRHD with INCLUDE_PCI_ALL */
 void iommu_enable(void); /* enable all iommus */
 void iommu_disable(void); /* disable all iommus */
 bool iommu_status(void); /* returns true if any iommu is turned on */
+void iommu_process_cleanup(struct proc *); /* remove all pci devices associated
+						with proc */
 
 /*
  * VT-d hardware uses 4KiB page size regardless of host page size.
