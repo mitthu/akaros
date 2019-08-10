@@ -4,8 +4,12 @@
 
  TODO
  ====
+ - iommu_process_cleanup() is untested.
  - In iommu_map_pci_devices() assign the correct iommu for scoped DRHD. Right
  now the default iommu is assigned to all devices.
+ - In assign_device() make sure the process in not in DYING or DYING_ABORT state.
+ - Assigning processes across multiple IOMMUs / DRHDs will result in
+ corruption of iommu->procs. This is because the tailq relies on proc->iommu_link.
  */
 
 #include <stdio.h>
@@ -324,6 +328,14 @@ static bool unassign_device(int bus, int dev, int func)
         proc_decref(p);
 
         return true;
+}
+
+void iommu_process_cleanup(struct proc *p)
+{
+        struct pci_device *pcidev;
+
+        TAILQ_FOREACH(pcidev, &p->pci_devices, proc_link)
+                unassign_device(pcidev->bus, pcidev->dev, pcidev->func);
 }
 
 /////// END: MAPPING ///////////////////////////////////////////////////////////
