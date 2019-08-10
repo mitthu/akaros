@@ -2,6 +2,10 @@
  * File: iommu.c - Driver for accessing Intel iommu
  * Author: Aditya Basu <mitthu@google.com>
 
+ Lock ordering
+ =============
+ (1) proc->proc_lock => (2) iommu->iommu_lock
+
  TODO
  ====
  - iommu_process_cleanup() is untested.
