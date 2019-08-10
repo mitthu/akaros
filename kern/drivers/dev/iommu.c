@@ -109,7 +109,12 @@ static physaddr_t rt_init(uint16_t did)
         return rt;
 }
 
-static void set_pte(int bus, int dev, int func, physaddr_t pg)
+static void setup_page_tables(struct proc *p, struct pci_device *d)
+{
+        // setup the pte
+}
+
+static void teardown_page_tables(struct proc *p, struct pci_device *d)
 {
 
 }
@@ -219,39 +224,24 @@ bool iommu_status(void)
 /////// END: ENABLE / DISABLE IOMMU ////////////////////////////////////////////
 
 /* Helpers for set/get/init PCI device (BDF) <=> Process map */
+
 //////// BEGIN: MAPPING ////////////////////////////////////////////////////////
-/* TODO: Manage regspace in a separate struct. We currently remap the regspace
-with NOCACHE and remove this PTE on deletion. For multiple devices we will want
-to manage it differently.
-*/
-static struct mapping {
-    struct pci_device *device;
-    struct proc *process;
-    void __iomem *regspace;
-} map;
 
-static struct mapping *add_map_dev(struct pci_device *device,
-                                         struct proc *process)
+/* come up with a better name! */
+static bool proc_already_in_iommu_list(struct iommu *iommu, struct proc *p)
 {
-        if (!device) {
-                printk(IOMMU "cannot find pci dev\n");
-                return NULL;
+        struct proc *proc_iter;
+
+        TAILQ_FOREACH(proc_iter, &iommu->procs, iommu_link) {
+                if (proc_iter == p)
+                        return true;
         }
 
-        if (!process) {
-                printk(IOMMU "cannot find process\n");
-                return NULL;
-        }
-
-        map.device = device;
-        map.process = process;
-        map.regspace = device->iommu->regio;
-
-        return &map;
+        return false;
 }
 
-static struct mapping *add_map_bdf(int bus, int dev, int func,
-                                        pid_t pid)
+/* this function retains a KREF to struct proc for each assigned PCI device */
+static bool assign_device(int bus, int dev, int func, pid_t pid)
 {
         int tbdf = MKBUS(BusPCI, bus, dev, func);
         struct pci_device *d = pci_match_tbdf(tbdf);
@@ -259,41 +249,88 @@ static struct mapping *add_map_bdf(int bus, int dev, int func,
 
         if (!p) {
                 printk(IOMMU "cannot find pid %d\n", pid);
-                return NULL;
+                return false;
         }
 
         if (!d) {
                 printk(IOMMU "cannot find dev %x:%x.%x\n", bus, dev, func);
                 proc_decref(p);
-                return NULL;
+                return false;
         }
-        
-        return add_map_dev(d, p);
-}
 
-/* We just have one entry. However when we have a linked list, we can choose by
-   process. */
-static struct mapping *get_map(struct proc *process)
-{
-        return &map;
-}
-
-static void del_map(struct mapping *m)
-{
-        map.device = NULL;
-        proc_decref(map.process);
-        map.process = NULL;
-        if (map.regspace) {
-                vunmap_vmem((uintptr_t) map.regspace, VTD_PAGE_SIZE);
-                map.regspace = NULL;
+        if (d->proc_owner) {
+                printk(IOMMU "dev already assigned to pid = %d\n", p->pid);
+                proc_decref(p);
+                return false;
         }
+
+        /* grab locks */
+        spin_lock_irqsave(&p->proc_lock);
+        spin_lock_irqsave(&d->iommu->iommu_lock);
+
+        d->proc_owner = p; /* protected by iommu_lock */
+        d->iommu->num_assigned_devs += 1; /* protected by iommu_lock */
+
+        /* add device to list in struct proc */
+        TAILQ_INSERT_TAIL(&p->pci_devices, d, proc_link);
+
+        /* add proc to list in struct iommu */
+        if (!proc_already_in_iommu_list(d->iommu, p))
+                TAILQ_INSERT_TAIL(&d->iommu->procs, p, iommu_link);
+
+        /* release locks */
+        spin_unlock_irqsave(&d->iommu->iommu_lock);
+        spin_unlock_irqsave(&p->proc_lock);
+
+        /* setup the actual page tables */
+        setup_page_tables(p, d);
+
+        return true;
 }
 
-static bool map_is_empty()
+static bool unassign_device(int bus, int dev, int func)
 {
-        if (map.process == NULL || map.device == NULL)
-                return true;
-        return false;
+        int tbdf = MKBUS(BusPCI, bus, dev, func);
+        struct pci_device *d = pci_match_tbdf(tbdf);
+        struct proc *p;
+
+        if (!d) {
+                printk(IOMMU "cannot find dev %x:%x.%x\n", bus, dev, func);
+                return false;
+        }
+
+        p = d->proc_owner;
+        if (!p) {
+                printk(IOMMU "%x:%x.%x is not assigned to any process\n",
+                        bus, dev, func);
+                return false;
+        }
+
+        /* teardown page table association */
+        teardown_page_tables(p, d);
+
+        /* grab locks */
+        spin_lock_irqsave(&p->proc_lock);
+        spin_lock_irqsave(&d->iommu->iommu_lock);
+
+        d->proc_owner = NULL; /* protected by iommu_lock */
+        d->iommu->num_assigned_devs -= 1; /* protected by iommu_lock */
+
+        /* remove device from list in struct proc */
+        TAILQ_REMOVE(&p->pci_devices, d, proc_link);
+
+        /* remove proc from list in struct iommu, if active device passthru */
+        if (TAILQ_EMPTY(&p->pci_devices))
+                TAILQ_REMOVE(&d->iommu->procs, p, iommu_link);
+
+        /* release locks */
+        spin_unlock_irqsave(&d->iommu->iommu_lock);
+        spin_unlock_irqsave(&p->proc_lock);
+
+        /* decrement KREF for this PCI device */
+        proc_decref(p);
+
+        return true;
 }
 
 /////// END: MAPPING ///////////////////////////////////////////////////////////
@@ -303,49 +340,44 @@ static int write_add_dev(char *va, size_t n)
 {
         int bus, dev, func, err;
         pid_t pid;
-        struct mapping *m = NULL;
 
         err = sscanf(va, "%x:%x.%x %d\n", &bus, &dev, &func, &pid);
-        printk(IOMMU "parsed:\n"
-                "\tb = %x\n"
-                "\td = %x\n"
-                "\tf = %x\n"
-                "\tpid = %d\n",
-                bus, dev, func, pid);
+        // printk(IOMMU "parsed:\n"
+        //         "\tb = %x\n"
+        //         "\td = %x\n"
+        //         "\tf = %x\n"
+        //         "\tpid = %d\n",
+        //         bus, dev, func, pid);
 
-        if (err != 4) {
-                printk(IOMMU "error parsing #iommu/attach; items parsed: %d\n",
-                        err);
-                return 0;
-        }
+        if (err != 4)
+                error(EIO,
+                  IOMMU "error parsing #iommu/attach; items parsed: %d", err);
 
-        m = add_map_bdf(bus, dev, func, pid);
-        if (!m) {
+        if (!assign_device(bus, dev, func, pid))
                 printk(IOMMU "passthru failed\n");
-                return 0;
-        }
-
-        // call set_pte()
 
         return n;
 }
 
 static int write_remove_dev(char *va, size_t n)
 {
-        int err;
-        pid_t pid;
+        int bus, dev, func, err;
 
-        err = sscanf(va, "%d\n", &pid);
-        printk(IOMMU "parsed:\n"
-                "\tpid = %d\n", pid);
+        err = sscanf(va, "%x:%x.%x\n", &bus, &dev, &func);
+        // printk(IOMMU "parsed:\n"
+        //         "\tb = %x\n"
+        //         "\td = %x\n"
+        //         "\tf = %x\n",
+        //         bus, dev, func);
 
-        if (err != 1) {
-                printk(IOMMU "error parsing #iommu/detach; items parsed: %d\n",
-                        err);
+        if (err != 3) {
+                error(EIO,
+                  IOMMU "error parsing #iommu/detach; items parsed: %d", err);
                 return 0;
         }
 
-        del_map(&map);
+        if (!unassign_device(bus, dev, func))
+                printk(IOMMU "passthru failed\n");
 
         return n;
 }
@@ -364,20 +396,37 @@ static int write_power(char *va, size_t n)
                 return n;
 }
 
+static void _open_mappings(struct sized_alloc *sza, struct proc *proc)
+{
+        struct pci_device *pcidev;
+        sza_printf(sza, "\tpid = %d\n", proc->pid);
+
+        TAILQ_FOREACH(pcidev, &proc->pci_devices, proc_link) {
+                sza_printf(sza, "\t\tdevice = %x:%x.%x\n", pcidev->bus,
+                                pcidev->dev, pcidev->func);
+        }
+}
+
 static struct sized_alloc *open_mappings(void)
 {
+        struct iommu *iommu;
+        struct proc *proc;
         struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
 
-        sza_printf(sza, "mappings:\n");
-        if (map_is_empty()){
-                sza_printf(sza, "\t<none>\n");
-                return sza;
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                spin_lock_irqsave(&iommu->iommu_lock);
+
+                sza_printf(sza, "Mappings for iommu@%p\n", iommu);
+                if(TAILQ_EMPTY(&iommu->procs))
+                        sza_printf(sza, "\t<empty>\n");
+                else
+                        TAILQ_FOREACH(proc, &iommu->procs, iommu_link) {
+                                _open_mappings(sza, proc);
+                        }
+
+                spin_unlock_irqsave(&iommu->iommu_lock);
         }
 
-        sza_printf(sza, "\tdevice = %x:%x.%x // ",
-                map.device->bus, map.device->dev, map.device->func);
-        sza_printf(sza, "process = %d // ", map.process->pid);
-        sza_printf(sza, "iommu = %p\n", map.device->iommu);
         return sza;
 }
 
@@ -388,6 +437,7 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         sza_printf(sza, "\niommu@%p\n", iommu);
         sza_printf(sza, "\trba = %p\n", iommu->rba);
         sza_printf(sza, "\tsupported = %s\n", iommu->supported ? "yes" : "no");
+        sza_printf(sza, "\tnum_assigned_devs = %d\n", iommu->num_assigned_devs);
         sza_printf(sza, "\tregspace = %p\n", iommu->regio);
         
         value = read32(iommu->regio + DMAR_VER_REG);
@@ -460,8 +510,6 @@ static char *devname(void)
 
 static struct chan *iommuattach(char *spec)
 {
-        // if (!iommu_supported())
-        //         error(ENODEV, IOMMU "not supported");
         return devattach(devname(), spec);
 }
 
@@ -545,9 +593,12 @@ static size_t iommuread(struct chan *c, void *va, size_t n, off64_t offset)
 
         case Qremovedev:
                 return readstr(offset, va, n,
-                    "write format: pid\n"
-                    "example:\n"
-                    "$ echo 13 >\\#iommu/detach\n");
+                    "write format: xx:yy.z\n"
+                    "   xx  = bus (in hex)\n"
+                    "   yy  = device (in hex)\n"
+                    "   z   = function (in hex)\n"
+                    "\nexample:\n"
+                    "$ echo 00:1f.2 >\\#iommu/detach\n");
 
         case Qmappings:
         case Qinfo:
@@ -567,10 +618,14 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
 
         switch (c->qid.path) {
         case Qadddev:
+                if (!iommu_supported())
+                        error(EROFS, IOMMU "not supported");
                 err = write_add_dev(va, n);
                 break;
 
         case Qremovedev:
+                if (!iommu_supported())
+                        error(EROFS, IOMMU "not supported");
                 err = write_remove_dev(va, n);
                 break;
 
@@ -581,7 +636,7 @@ static size_t iommuwrite(struct chan *c, void *va, size_t n, off64_t offset)
         case Qmappings:
         case Qinfo:
         case Qdir:
-                printk(IOMMU "write: qid %d not implemented\n", c->qid.path);
+                error(EROFS, IOMMU "cannot modify");
                 break;
         default:
                 printk(IOMMU "write: qid %d is impossible\n", c->qid.path);
@@ -746,6 +801,7 @@ void iommu_initialize(struct iommu *iommu, uint64_t rba)
         iommu->regio = (void __iomem *) vmap_pmem_nocache(rba, VTD_PAGE_SIZE);
         iommu->roottable = rt_init(IOMMU_DID_DEFAULT);
         iommu->supported = true; /* this gets updated by iommu_supported() */
+        iommu->num_assigned_devs = 0;
 
         /* add the iommu to the list of all discovered iommu */
         TAILQ_INSERT_TAIL(&iommu_list, iommu, iommu_link);

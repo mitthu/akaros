@@ -119,7 +119,8 @@ struct proc {
 	struct vmm vmm;
 
 	struct strace		*strace;
-	struct pcidev_stailq 	pci_devices; /* for device passthru */
+	struct pcidev_tq 	pci_devices; /* for device passthru */
+	TAILQ_ENTRY(proc) 	iommu_link;
 };
 
 /* Til we remove all Env references */

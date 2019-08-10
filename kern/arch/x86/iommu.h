@@ -58,6 +58,7 @@ struct iommu {
 
 	void __iomem *regio;
 	uint64_t rba; /* for unique assertion */
+	uint64_t num_assigned_devs;
 	physaddr_t roottable;
 };
 extern TAILQ_HEAD(iommu_list_tq, iommu) iommu_list;
