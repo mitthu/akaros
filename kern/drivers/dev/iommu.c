@@ -14,6 +14,8 @@
  - In assign_device() make sure the process in not in DYING or DYING_ABORT state.
  - Assigning processes across multiple IOMMUs / DRHDs will result in
  corruption of iommu->procs. This is because the tailq relies on proc->iommu_link.
+ - IOMMU_DID_DEFAULT = 1; this means pid = 1 cannot have a device passthru
+ because we use the pid as "did" or domain ID.
  */
 
 #include <stdio.h>
@@ -64,10 +66,17 @@ static inline struct context_entry *get_context_entry(physaddr_t paddr)
         return (struct context_entry *) KADDR(paddr);
 }
 
-static physaddr_t ct_init(uint16_t domain)
+/* iommu is not modified by this function or its callees. */
+static physaddr_t ct_init(struct iommu *iommu, uint16_t did)
 {
         struct context_entry *cte;
         physaddr_t ct;
+        uint8_t ctx_aw;
+
+        if (iommu->using_qemu)
+                ctx_aw = CTX_AW_L3;
+        else
+                ctx_aw = CTX_AW_L4;
 
         cte = (struct context_entry *) kpage_zalloc_addr();
         ct = PADDR(cte);
@@ -75,8 +84,8 @@ static physaddr_t ct_init(uint16_t domain)
         for (int i = 0; i < 32 * 8; i++, cte++) { // device * func
                 /* initializations such as the domain */
                 cte->hi = 0
-                        | (domain << CTX_HI_DID_SHIFT) // DID bit: 72 to 87
-                        | (CTX_AW_DEFAULT << CTX_HI_AW_SHIFT); // AW
+                        | (did << CTX_HI_DID_SHIFT) // DID bit: 72 to 87
+                        | (ctx_aw << CTX_HI_AW_SHIFT); // AW
                 cte->lo = 0
                         | (0x1 << CTX_LO_PRESET_SHIFT) // is present
                         | (0x2 << CTX_LO_TRANS_SHIFT) // 0x2: pass through
@@ -86,8 +95,9 @@ static physaddr_t ct_init(uint16_t domain)
         return ct;
 }
 
-/* Get a new root_entry table. Allocates all context entries. */
-static physaddr_t rt_init(uint16_t did)
+/* Get a new root_entry table. Allocates all context entries.
+   iommu is not modified by this function or its callees. */
+static physaddr_t rt_init(struct iommu *iommu, uint16_t did)
 {
         struct root_entry *rte;
         physaddr_t rt;
@@ -100,7 +110,7 @@ static physaddr_t rt_init(uint16_t did)
 
         /* create context table */
         for (int i = 0; i < 256; i++, rte++) {
-                ct = ct_init(did);
+                ct = ct_init(iommu, did);
                 rte->hi = 0;
                 rte->lo = 0
                         | ct
@@ -112,12 +122,12 @@ static physaddr_t rt_init(uint16_t did)
 
 static void setup_page_tables(struct proc *p, struct pci_device *d)
 {
-        // setup the pte
+        // setup the pte; use the pip as did
 }
 
 static void teardown_page_tables(struct proc *p, struct pci_device *d)
 {
-
+        // revert to default did
 }
 
 /////// END: ROOT TABLE ////////////////////////////////////////////////////////
@@ -455,12 +465,18 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         sza_printf(sza, "\tsupported = %s\n", iommu->supported ? "yes" : "no");
         sza_printf(sza, "\tnum_assigned_devs = %d\n", iommu->num_assigned_devs);
         sza_printf(sza, "\tregspace = %p\n", iommu->regio);
-        
+        sza_printf(sza, "\tqemu detected = %s\n",
+                iommu->using_qemu ? "yes" : "no");
+        sza_printf(sza, "\tHAW (from DMAR) = %d\n", iommu->haw_dmar);
+        sza_printf(sza, "\tHAW (from CAP) = %d\n", iommu->haw_cap);
+
         value = read32(iommu->regio + DMAR_VER_REG);
         sza_printf(sza, "\tversion = 0x%x\n", value);
 
         value = read64(iommu->regio + DMAR_CAP_REG);
         sza_printf(sza, "\tcapabilities = %p\n", value);
+        sza_printf(sza, "\t\tmgaw: 0x%x\n", cap_mgaw(value));
+        sza_printf(sza, "\t\tsagaw: 0x%x\n", cap_sagaw(value));
 
         value = read64(iommu->regio + DMAR_ECAP_REG);
         sza_printf(sza, "\text. capabilities = %p\n", value);
@@ -490,10 +506,10 @@ static struct sized_alloc *open_info(void)
         sza_printf(sza, "Driver info:\n");
 
         value = IOMMU_DID_DEFAULT;
-        sza_printf(sza, "\tDefault DID = %d\n", value);
-        sza_printf(sza, "\tStatus = %s\n",
+        sza_printf(sza, "\tdefault DID = %d\n", value);
+        sza_printf(sza, "\tstatus = %s\n",
                 iommu_status() ? "enabled" : "disabled");
-        sza_printf(sza, "\tForce support = %s\n",
+        sza_printf(sza, "\tforce support = %s\n",
                 IOMMU_FORCE_SUPPORT ? "yes (should be 'no' in prod)" : "no");
 
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
@@ -697,9 +713,15 @@ static bool iommu_assert_required_capabilities(struct iommu *iommu)
         ecap = read64(iommu->regio + DMAR_ECAP_REG);
         result = true; /* default */
 
-        support = cap_sagaw(cap) & 0x4;
-        if (!support) {
-                printk(IOMMU "%p: 4-level paging not supported\n", iommu);
+        if (cap_sagaw(cap) & 0x4) {
+                printk(IOMMU "%p: supports 4-level paging\n", iommu);
+                iommu->using_qemu = false;
+        } else if (cap_sagaw(cap) & 0x2) {
+                printk(IOMMU "%p: supports 3-level paging (qemu mode)\n", iommu);
+                iommu->using_qemu = true;
+        } else {
+                printk(IOMMU "%p: unsupported paging levels: 0x%x\n",
+                        iommu, cap_sagaw(cap));
                 result = false;
         }
 
@@ -719,6 +741,14 @@ static bool iommu_assert_required_capabilities(struct iommu *iommu)
         support = ecap_dev_iotlb_support(ecap);
         if (!support) {
                 printk(IOMMU "%p: device IOTLB not supported\n", iommu);
+                result = false;
+        }
+
+        /* max haw reported by iommu */
+        iommu->haw_cap = cap_mgaw(cap);
+        if (iommu->haw_cap != iommu->haw_dmar) {
+                printk(IOMMU "%p: HAW mismatch; DAMR reports %d, CAP reports %d\n",
+                        iommu, iommu->haw_dmar, iommu->haw_cap);
                 result = false;
         }
 
@@ -742,11 +772,22 @@ static void iommu_assert_all(void)
         }
 }
 
+static void iommu_populate_context_entries(void)
+{
+        struct iommu *iommu;
+
+        TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                iommu->roottable = rt_init(iommu, IOMMU_DID_DEFAULT);
+        }
+}
+
+
 /* Run this function after all individual IOMMUs are initialized. */
 void iommu_initialize_global(void)
 {
         /* fill the supported field in struct iommu */
         run_once(iommu_assert_all());
+        run_once(iommu_populate_context_entries());
 
         iommu_enable();
 }
@@ -808,16 +849,17 @@ void iommu_map_pci_devices(void)
 
 /* This is called from acpi.c to initialize struct iommu.
  * The actual IOMMU hardware is not touch or configured in any way. */
-void iommu_initialize(struct iommu *iommu, uint64_t rba)
+void iommu_initialize(struct iommu *iommu, uint8_t haw, uint64_t rba)
 {
         /* initilize the struct */
         TAILQ_INIT(&iommu->procs);
         spinlock_init_irqsave(&iommu->iommu_lock);
         iommu->rba = rba;
         iommu->regio = (void __iomem *) vmap_pmem_nocache(rba, VTD_PAGE_SIZE);
-        iommu->roottable = rt_init(IOMMU_DID_DEFAULT);
         iommu->supported = true; /* this gets updated by iommu_supported() */
         iommu->num_assigned_devs = 0;
+        iommu->haw_dmar = haw;
+        iommu->using_qemu = false; /* gets updated in iommu_initialize_global() */
 
         /* add the iommu to the list of all discovered iommu */
         TAILQ_INSERT_TAIL(&iommu_list, iommu, iommu_link);
