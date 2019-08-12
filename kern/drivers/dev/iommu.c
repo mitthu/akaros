@@ -295,12 +295,12 @@ static bool assign_device(int bus, int dev, int func, pid_t pid)
         if (!proc_already_in_iommu_list(d->iommu, p))
                 TAILQ_INSERT_TAIL(&d->iommu->procs, p, iommu_link);
 
+        /* setup the actual page tables */
+        setup_page_tables(p, d);
+
         /* release locks */
         spin_unlock_irqsave(&d->iommu->iommu_lock);
         spin_unlock_irqsave(&p->proc_lock);
-
-        /* setup the actual page tables */
-        setup_page_tables(p, d);
 
         return true;
 }
@@ -323,12 +323,12 @@ static bool unassign_device(int bus, int dev, int func)
                 return false;
         }
 
-        /* teardown page table association */
-        teardown_page_tables(p, d);
-
         /* grab locks */
         spin_lock_irqsave(&p->proc_lock);
         spin_lock_irqsave(&d->iommu->iommu_lock);
+
+        /* teardown page table association */
+        teardown_page_tables(p, d);
 
         d->proc_owner = NULL; /* protected by iommu_lock */
         d->iommu->num_assigned_devs -= 1; /* protected by iommu_lock */
