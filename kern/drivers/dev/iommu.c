@@ -468,22 +468,37 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         sza_printf(sza, "\tqemu detected = %s\n",
                 iommu->using_qemu ? "yes" : "no");
         sza_printf(sza, "\tHAW (from DMAR) = %d\n", iommu->haw_dmar);
-        sza_printf(sza, "\tHAW (from CAP) = %d\n", iommu->haw_cap);
+        sza_printf(sza, "\tHAW (from CAP[MGAW]) = %d\n", iommu->haw_cap);
 
         value = read32(iommu->regio + DMAR_VER_REG);
         sza_printf(sza, "\tversion = 0x%x\n", value);
 
         value = read64(iommu->regio + DMAR_CAP_REG);
         sza_printf(sza, "\tcapabilities = %p\n", value);
-        sza_printf(sza, "\t\tmgaw: 0x%x\n", cap_mgaw(value));
-        sza_printf(sza, "\t\tsagaw: 0x%x\n", cap_sagaw(value));
+        sza_printf(sza, "\t\tmgaw: %d\n", cap_mgaw(value));
+        sza_printf(sza, "\t\tsagaw (paging level): 0x%x\n", cap_sagaw(value));
+        sza_printf(sza, "\t\tcaching mode: 0x%x\n", cap_caching_mode(value));
+        sza_printf(sza, "\t\tzlr: 0x%x\n", cap_zlr(value));
+        sza_printf(sza, "\t\tnum domains: %d\n", cap_ndoms(value));
 
         value = read64(iommu->regio + DMAR_ECAP_REG);
         sza_printf(sza, "\text. capabilities = %p\n", value);
         sza_printf(sza, "\t\tpass through: %s\n",
                 ecap_pass_through(value) ? "yes" : "no");
-        sza_printf(sza, "\t\tiotlb: %s\n",
+        sza_printf(sza, "\t\tiotlb (DI): %s\n",
                 ecap_dev_iotlb_support(value) ? "yes" : "no");
+        sza_printf(sza, "\t\tiotlb register offset: 0x%x\n",
+                ecap_iotlb_offset(value));
+        sza_printf(sza, "\t\tsnoop control: %s\n",
+                ecap_sc_support(value) ? "yes" : "no");
+        sza_printf(sza, "\t\tcoherency: %s\n",
+                ecap_coherent(value) ? "yes" : "no");
+        sza_printf(sza, "\t\tQueue Invalidation (QI) support: %s\n",
+                ecap_qis(value) ? "yes" : "no");
+        sza_printf(sza, "\t\tInterrupt Remapping (IR) support: %s\n",
+                ecap_ir_support(value) ? "yes" : "no");
+        sza_printf(sza, "\t\tExtended Interrupt Mode (EIM): 0x%x\n",
+                ecap_eim_support(value));
 
         value = read32(iommu->regio + DMAR_GSTS_REG);
         sza_printf(sza, "\tglobal status = 0x%x\n", value);
