@@ -135,8 +135,13 @@ static bool _iommu_enable(struct iommu *iommu)
 
         // TODO: flush IOTLB if reported as necessary by cap register
         // TODO: issue TE only once
-        /* enable translation and set root table */
-        cmd = DMA_GCMD_TE | DMA_GCMD_SRTP;
+
+        /* set root table - needs to be done first */
+        cmd = DMA_GCMD_SRTP;
+        write32(cmd, iommu->regio + DMAR_GCMD_REG);
+
+        /* enable translation */
+        cmd = DMA_GCMD_TE;
         write32(cmd, iommu->regio + DMAR_GCMD_REG);
 
         /* read status */
@@ -259,6 +264,7 @@ static bool assign_device(int bus, int dev, int func, pid_t pid)
                 return false;
         }
 
+        // TODO: protect behind lock
         if (d->proc_owner) {
                 printk(IOMMU "dev already assigned to pid = %d\n", p->pid);
                 proc_decref(p);
@@ -338,6 +344,7 @@ void iommu_process_cleanup(struct proc *p)
 {
         struct pci_device *pcidev;
 
+        // TODO: grab proc_lock
         TAILQ_FOREACH(pcidev, &p->pci_devices, proc_link)
                 unassign_device(pcidev->bus, pcidev->dev, pcidev->func);
 }
