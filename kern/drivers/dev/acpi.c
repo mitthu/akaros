@@ -1300,7 +1300,7 @@ static struct Atable *parsedmar(struct Atable *parent, char *name, uint8_t *raw,
 			o += dhlen;
 		}
 
-		iommu_initialize(&drhd->iommu, drhd->rba);
+		iommu_initialize(&drhd->iommu, dt->haw, drhd->rba);
 
 		/*
 		 * NOTE: if all is set, there should be no scopes of type

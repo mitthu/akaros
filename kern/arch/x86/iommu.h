@@ -45,9 +45,8 @@
 #define CTX_AW_L4	0x2
 #define CTX_AW_L5	0x3
 #define CTX_AW_L6	0x4
-#define CTX_AW_DEFAULT	CTX_AW_L4
 
-#define IOMMU_DID_DEFAULT 0
+#define IOMMU_DID_DEFAULT 1 // means pid 1 cannot have a passthru device
 #define IOMMU_FORCE_SUPPORT 1 // for debugging in QEMU
 
 struct iommu {
@@ -55,15 +54,18 @@ struct iommu {
 	TAILQ_ENTRY(iommu) iommu_link;
 	struct proc_list procs; // unused
 	bool supported;
+	bool using_qemu;
 
 	void __iomem *regio;
 	uint64_t rba; /* for unique assertion */
 	uint64_t num_assigned_devs;
 	physaddr_t roottable;
+	uint8_t haw_dmar; /* (=N+1) haw reported by DMAR */
+	uint8_t haw_cap; /* (=N+1) haw reported by CAP[MGAW] of iommu */
 };
 extern TAILQ_HEAD(iommu_list_tq, iommu) iommu_list;
 
-void iommu_initialize(struct iommu *iommu, uint64_t rba);
+void iommu_initialize(struct iommu *iommu, uint8_t haw, uint64_t rba);
 void iommu_initialize_global(void);
 void iommu_map_pci_devices(void); /* associate pci devices with correct iommu */
 bool iommu_supported(void);
