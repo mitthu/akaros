@@ -566,8 +566,9 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         sza_printf(sza, "\tregspace = %p\n", iommu->regio);
         sza_printf(sza, "\tqemu detected = %s\n",
                 iommu->using_qemu ? "yes" : "no");
-        sza_printf(sza, "\tHAW (from DMAR) = %d\n", iommu->haw_dmar);
-        sza_printf(sza, "\tHAW (from CAP[MGAW]) = %d\n", iommu->haw_cap);
+        sza_printf(sza, "\thost addr width (dmar) = %d\n", iommu->haw_dmar);
+        sza_printf(sza, "\tthost addr width (cap[mgaw]) = %d\n",
+                iommu->haw_cap);
 
         value = read32(iommu->regio + DMAR_VER_REG);
         sza_printf(sza, "\tversion = 0x%x\n", value);
@@ -576,15 +577,22 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         sza_printf(sza, "\tcapabilities = %p\n", value);
         sza_printf(sza, "\t\tmgaw: %d\n", cap_mgaw(value));
         sza_printf(sza, "\t\tsagaw (paging level): 0x%x\n", cap_sagaw(value));
-        sza_printf(sza, "\t\tcaching mode: 0x%x\n", cap_caching_mode(value));
+        sza_printf(sza, "\t\tcaching mode: %s (%d)\n", cap_caching_mode(value) ?
+                "yes" : "no", cap_caching_mode(value));
         sza_printf(sza, "\t\tzlr: 0x%x\n", cap_zlr(value));
+        sza_printf(sza, "\t\trwbf: %s\n", cap_rwbf(value) ? "required"
+                                                          : "not required");
         sza_printf(sza, "\t\tnum domains: %d\n", cap_ndoms(value));
+        sza_printf(sza, "\t\tsupports protected high-memory region: %s\n",
+                cap_phmr(value) ? "yes" : "no");
+        sza_printf(sza, "\t\tsupports Protected low-memory region: %s\n",
+                cap_plmr(value) ? "yes" : "no");
 
         value = read64(iommu->regio + DMAR_ECAP_REG);
         sza_printf(sza, "\text. capabilities = %p\n", value);
         sza_printf(sza, "\t\tpass through: %s\n",
                 ecap_pass_through(value) ? "yes" : "no");
-        sza_printf(sza, "\t\tiotlb (DI): %s\n",
+        sza_printf(sza, "\t\tdevice iotlb: %s\n",
                 ecap_dev_iotlb_support(value) ? "yes" : "no");
         sza_printf(sza, "\t\tiotlb register offset: 0x%x\n",
                 ecap_iotlb_offset(value));
@@ -592,11 +600,11 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
                 ecap_sc_support(value) ? "yes" : "no");
         sza_printf(sza, "\t\tcoherency: %s\n",
                 ecap_coherent(value) ? "yes" : "no");
-        sza_printf(sza, "\t\tQueue Invalidation (QI) support: %s\n",
+        sza_printf(sza, "\t\tqueue invalidation support: %s\n",
                 ecap_qis(value) ? "yes" : "no");
-        sza_printf(sza, "\t\tInterrupt Remapping (IR) support: %s\n",
+        sza_printf(sza, "\t\tinterrupt remapping support: %s\n",
                 ecap_ir_support(value) ? "yes" : "no");
-        sza_printf(sza, "\t\tExtended Interrupt Mode (EIM): 0x%x\n",
+        sza_printf(sza, "\t\textended interrupt mode: 0x%x\n",
                 ecap_eim_support(value));
 
         value = read32(iommu->regio + DMAR_GSTS_REG);
@@ -617,10 +625,10 @@ static struct sized_alloc *open_info(void)
         uint64_t value;
         struct iommu *iommu;
 
-        sza_printf(sza, "Driver info:\n");
+        sza_printf(sza, "driver info:\n");
 
         value = IOMMU_DID_DEFAULT;
-        sza_printf(sza, "\tdefault DID = %d\n", value);
+        sza_printf(sza, "\tdefault did = %d\n", value);
         sza_printf(sza, "\tstatus = %s\n",
                 iommu_status() ? "enabled" : "disabled");
         sza_printf(sza, "\tforce support = %s\n",
