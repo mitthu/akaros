@@ -9,11 +9,19 @@
  README
  ======
  Acronyms:
- ICE - Interrupt Entry Cache
+ IEC: Interrupt Entry Cache
+ RWBF: Required Write-Buffer Flushing
+ IVT: Invalidate IOTLB
 
  - For running in QEMU there is a custom patch. It does the following
         * Access extended PCIe space from in/out instructions
         * Support for 4-level paging of IOMMU
+ - TLB shootdowns include:
+        * If RWBF set in capability, then perform write buffer flushing.
+        * If IOTLB is present, then we can perform one of the following:
+                * global shootdown
+                * DID specific shootdown (DID = pid for us)
+                * page-specific shootdown for a specific DID
 
  Running
  -------
@@ -112,6 +120,47 @@ static struct dirtab iommudir[] = {
 };
 
 /////// START: ROOT TABLE //////////////////////////////////////////////////////
+/* this is might be necessary when updating mapping structures: context-cache,
+   IOTLB or IEC */
+static inline void write_buffer_flush(struct iommu *iommu)
+{
+        uint32_t volatile cmd, status;
+
+        if (!iommu->rwbf)
+                return;
+        
+        cmd = read32(iommu->regio + DMAR_GCMD_REG) | DMA_GCMD_WBF;
+        write32(cmd, iommu->regio + DMAR_GCMD_REG);
+
+        /* read status */
+        do {
+                status = read32(iommu->regio + DMAR_GSTS_REG);
+                I_AM_HERE;
+        } while (status & DMA_GSTS_WBFS);
+}
+
+/* this is necessary when caching mode is supported.
+   ASSUMES: no pending flush requests */
+static inline void iotlb_flush(struct iommu *iommu, uint16_t did)
+{
+        uint64_t volatile cmd, status;
+
+        cmd = 0x0
+        | DMA_TLB_IVT        /* issue the flush command */ 
+        | DMA_TLB_DSI_FLUSH  /* DID specific shootdown */
+        | DMA_TLB_READ_DRAIN
+        | DMA_TLB_WRITE_DRAIN
+        | DMA_TLB_DID(did);
+        write64(cmd, iommu->regio + iommu->iotlb_cmd_offset);
+
+        /* read status */
+        do {
+                status = read64(iommu->regio + iommu->iotlb_cmd_offset);
+                status >>= 63; /* bit 64 (IVT): gets cleared on completion */
+                I_AM_HERE;
+        } while (status);
+}
+
 static inline struct root_entry *get_root_entry(physaddr_t paddr)
 {
         return (struct root_entry *) KADDR(paddr);
@@ -143,9 +192,9 @@ static physaddr_t ct_init(struct iommu *iommu, uint16_t did)
                         | (did << CTX_HI_DID_SHIFT) // DID bit: 72 to 87
                         | (ctx_aw << CTX_HI_AW_SHIFT); // AW
                 cte->lo = 0
-                        | (0x1 << CTX_LO_PRESET_SHIFT) // is present
                         | (0x2 << CTX_LO_TRANS_SHIFT) // 0x2: pass through
-                        | (0x1 << CTX_LO_FPD_SHIFT); // disable faults
+                        | (0x1 << CTX_LO_FPD_SHIFT) // disable faults
+                        | (0x1 << CTX_LO_PRESET_SHIFT); // is present
         }
 
         return ct;
@@ -212,6 +261,21 @@ static void setup_page_tables(struct proc *p, struct pci_device *d)
                 return;
         }
 
+        // Mark the entry as not present
+        // Assumes: 4-level paging
+        // TODO: if CM is set, shootdown IOTLB entry
+        cte->lo &= ~0x1;
+        write_buffer_flush(iommu);
+        iotlb_flush(iommu, IOMMU_DID_DEFAULT);
+
+        cte->hi = 0
+                | (did << CTX_HI_DID_SHIFT) // DID bit: 72 to 87
+                | (CTX_AW_L4 << CTX_HI_AW_SHIFT); // AW
+
+        cte->lo = p->env_pgdir.eptp /* assumes page alignment */
+                | (0x0 << CTX_LO_TRANS_SHIFT)
+                | (0x1 << CTX_LO_FPD_SHIFT) // disable faults
+                | (0x1 << CTX_LO_PRESET_SHIFT); /* mark present */
 }
 
 static void teardown_page_tables(struct proc *p, struct pci_device *d)
@@ -227,6 +291,21 @@ static void teardown_page_tables(struct proc *p, struct pci_device *d)
                 return;
         }
 
+        // Mark the entry as not present
+        // Assumes: 4-level paging
+        // TODO: if CM is set, shootdown IOTLB entry
+        cte->lo &= ~0x1;
+        write_buffer_flush(iommu);
+        iotlb_flush(iommu, p->pid);
+
+        cte->hi = 0
+                | (did << CTX_HI_DID_SHIFT) // DID bit: 72 to 87
+                | (CTX_AW_L4 << CTX_HI_AW_SHIFT); // AW
+
+        cte->lo = 0 /* assumes page alignment */
+                | (0x2 << CTX_LO_TRANS_SHIFT)
+                | (0x1 << CTX_LO_FPD_SHIFT) // disable faults
+                | (0x1 << CTX_LO_PRESET_SHIFT); /* mark present */
 }
 
 /////// END: ROOT TABLE ////////////////////////////////////////////////////////
@@ -367,6 +446,12 @@ static bool assign_device(int bus, int dev, int func, pid_t pid)
                 return false;
         }
 
+        if (pid == 1) {
+                printk(IOMMU "device passthru not supported for pid = 1");
+                proc_decref(p);
+                return false;
+        }
+
         if (!d) {
                 printk(IOMMU "cannot find dev %x:%x.%x\n", bus, dev, func);
                 proc_decref(p);
@@ -477,6 +562,10 @@ static int write_add_dev(char *va, size_t n)
         if (err != 4)
                 error(EIO,
                   IOMMU "error parsing #iommu/attach; items parsed: %d", err);
+
+        if (pid == 1) {
+                error(EIO, IOMMU "device passthru not supported for pid = 1");
+        }
 
         if (!assign_device(bus, dev, func, pid))
                 printk(IOMMU "passthru failed\n");
