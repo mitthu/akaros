@@ -47,7 +47,7 @@
 #define CTX_AW_L6	0x4
 
 #define IOMMU_DID_DEFAULT 1 // means pid 1 cannot have a passthru device
-#define IOMMU_FORCE_SUPPORT 1 // for debugging in QEMU
+#define IOMMU_FORCE_SUPPORT 0 // for debugging in QEMU
 
 struct iommu {
 	spinlock_t iommu_lock;

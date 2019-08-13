@@ -120,14 +120,57 @@ static physaddr_t rt_init(struct iommu *iommu, uint16_t did)
         return rt;
 }
 
+static struct context_entry *get_ctx_for(int bus, int dev, int func,
+        physaddr_t roottable)
+{
+        struct root_entry *rte;
+        physaddr_t cte_phy;
+        struct context_entry *cte;
+        uint32_t offset = 0;
+
+        rte = get_root_entry(roottable + bus);
+
+        cte_phy = rte->lo & 0xFFFFFFFFFFFFF000;
+        cte = get_context_entry(cte_phy);
+        
+        offset = (dev * 8) + func;
+        cte += offset;
+
+        // printk(IOMMU "rte[%x:%x.%x] = %p\n", bus, dev, func, rte);
+        // printk(IOMMU "ctx_phy[%x:%x.%x] = %p\n", bus, dev, func, cte_phy);
+        // printk(IOMMU "ctx[%x:%x.%x] = %p\n", bus, dev, func, cte);
+        return cte;
+}
+
 static void setup_page_tables(struct proc *p, struct pci_device *d)
 {
-        // setup the pte; use the pip as did
+        // setup the pte; use the pid as did
+        uint32_t cmd, status;
+        uint16_t did = p->pid; /* casts down to 16-bit */
+        struct iommu *iommu = d->iommu;
+        struct context_entry *cte =
+                get_ctx_for(d->bus, d->dev, d->func, iommu->roottable);
+
+        if (iommu->using_qemu) {
+                printk(IOMMU "skip paging setup in qemu");
+                return;
+        }
+
 }
 
 static void teardown_page_tables(struct proc *p, struct pci_device *d)
 {
         // revert to default did
+        uint16_t did = IOMMU_DID_DEFAULT;
+        struct iommu *iommu = d->iommu;
+        struct context_entry *cte =
+                get_ctx_for(d->bus, d->dev, d->func, iommu->roottable);
+
+        if (iommu->using_qemu) {
+                printk(IOMMU "skip paging teardown in qemu");
+                return;
+        }
+
 }
 
 /////// END: ROOT TABLE ////////////////////////////////////////////////////////
