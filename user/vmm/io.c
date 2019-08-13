@@ -126,6 +126,7 @@ int io(struct guest_thread *vm_thread)
 	struct vm_trapframe *vm_tf = &(vm_thread->uthread.u_ctx.tf.vm_tf);
 
 	/* Get the RIP of the io access. */
+	// XXX rippa: here too (page boundary shit)
 	if (rippa(vm_thread, (uint64_t *)&ip))
 		return VM_PAGE_FAULT;
 	edx = vm_tf->tf_rdx;

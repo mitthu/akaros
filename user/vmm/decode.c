@@ -245,6 +245,8 @@ int decode(struct guest_thread *vm_thread, uint64_t *gpa, uint8_t *destreg,
 
 	DPRINTF("rip is %p\n", vm_tf->tf_rip);
 
+	// XXX this will break if an instruction crosses a page boundary where
+	// the adjacent pages do not map to guest-physically contiguous pages
 	if (rippa(vm_thread, (uint64_t *)&rip_gpa))
 		return VM_PAGE_FAULT;
 	DPRINTF("rip_gpa is %p\n", rip_gpa);
