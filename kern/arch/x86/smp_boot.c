@@ -84,6 +84,7 @@ void smp_final_core_init(void)
 	/* Set the coreid in pcpui for fast access to it through TLS. */
 	int coreid = get_os_coreid(hw_core_id());
 	struct per_cpu_info *pcpui = &per_cpu_info[coreid];
+
 	pcpui->coreid = coreid;
 	write_msr(MSR_GS_BASE, (uintptr_t)pcpui); /* our cr4 isn't set yet */
 	write_msr(MSR_KERN_GS_BASE, (uint64_t)pcpui);
@@ -211,6 +212,7 @@ void smp_boot(void)
 
 	/* Final core initialization */
 	init_barrier(&generic_barrier, num_cores);
+
 	/* This will break the cores out of their hlt in smp_entry.S */
 	send_broadcast_ipi(I_POKE_CORE);
 	smp_final_core_init();	/* need to init ourselves as well */
