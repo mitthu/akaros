@@ -136,9 +136,9 @@ static struct context_entry *get_ctx_for(int bus, int dev, int func,
         offset = (dev * 8) + func;
         cte += offset;
 
-        printk(IOMMU "rte[%x:%x.%x] = %p\n", bus, dev, func, rte);
-        printk(IOMMU "ctx_phy[%x:%x.%x] = %p\n", bus, dev, func, cte_phy);
-        printk(IOMMU "ctx[%x:%x.%x] = %p\n", bus, dev, func, cte);
+        // printk(IOMMU "rte[%x:%x.%x] = %p\n", bus, dev, func, rte);
+        // printk(IOMMU "ctx_phy[%x:%x.%x] = %p\n", bus, dev, func, cte_phy);
+        // printk(IOMMU "ctx[%x:%x.%x] = %p\n", bus, dev, func, cte);
         return cte;
 }
 
@@ -151,6 +151,11 @@ static void setup_page_tables(struct proc *p, struct pci_device *d)
         struct context_entry *cte =
                 get_ctx_for(d->bus, d->dev, d->func, iommu->roottable);
 
+        if (iommu->using_qemu) {
+                printk(IOMMU "skip paging setup in qemu");
+                return;
+        }
+
 }
 
 static void teardown_page_tables(struct proc *p, struct pci_device *d)
@@ -160,6 +165,12 @@ static void teardown_page_tables(struct proc *p, struct pci_device *d)
         struct iommu *iommu = d->iommu;
         struct context_entry *cte =
                 get_ctx_for(d->bus, d->dev, d->func, iommu->roottable);
+
+        if (iommu->using_qemu) {
+                printk(IOMMU "skip paging teardown in qemu");
+                return;
+        }
+
 }
 
 /////// END: ROOT TABLE ////////////////////////////////////////////////////////
