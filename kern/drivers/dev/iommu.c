@@ -6,6 +6,62 @@
  =============
  (1) proc->proc_lock => (2) iommu->iommu_lock
 
+ README
+ ======
+ Acronyms:
+ ICE - Interrupt Entry Cache
+
+ - For running in QEMU there is a custom patch. It does the following
+        * Access extended PCIe space from in/out instructions
+        * Support for 4-level paging of IOMMU
+
+ Running
+ -------
+   # Prepare device for passthrough
+   # - unbind from existing driver
+   # - make sure the VFIO module is loaded
+   # - make sure all virtual functions are released by the driver
+   # - bind to VFIO driver for passthrough
+   $ PCIDEVICE_BDF:=0000:00:04.*
+   $ echo $(PCIDEVICE_BDF) | sudo tee /sys/bus/pci/devices/$(PCIDEVICE_BDF)/driver/unbind 
+   $ sudo modprobe vfio-pci
+   $ sudo rmmod ioatdma
+   $ echo $(PCIDEVICE_ID) | sudo tee /sys/bus/pci/drivers/vfio-pci/new_id
+
+   # Standard run
+   $ sudo $(QEMU) \
+        -enable-kvm \
+        -cpu host \
+        -smp 8 \
+        -m 4096 \
+        -nographic \
+        -net nic,model=e1000 \
+        -net user,hostfwd=tcp::5555-:22 \
+        -machine q35,accel=kvm,kernel-irqchip=split \
+        -device intel-iommu,intremap=off,caching-mode=on,device-iotlb=on \
+        -device vfio-pci,host=00:04.0 \
+        -kernel obj/kern/akaros-kernel
+
+   # Trace QEMU calls (for debugging)
+   $ echo -n '' >/tmp/qemu-trace
+   $ echo 'vfio_pci_read_config' >>/tmp/qemu-trace
+   $ echo 'vfio_pci_write_config' >>/tmp/qemu-trace
+   $ echo 'vfio_region_read' >>/tmp/qemu-trace
+   $ echo 'vfio_region_write' >>/tmp/qemu-trace
+   $ echo 'pci_data_read' >>/tmp/qemu-trace
+
+   $ sudo $(QEMU) \
+        -trace events=/tmp/qemu-trace \
+        -enable-kvm \
+        -cpu host \
+        -smp 8 \
+        -m 4096 \
+        -nographic \
+        -net nic,model=e1000 \
+        -net user,hostfwd=tcp::5555-:22 \
+        -device vfio-pci,host=00:04.0 \
+        -kernel obj/kern/akaros-kernel
+
  TODO
  ====
  - iommu_process_cleanup() is untested.
