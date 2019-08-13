@@ -130,7 +130,7 @@ static struct context_entry *get_ctx_for(int bus, int dev, int func,
 
         rte = get_root_entry(roottable + bus);
 
-        cte_phy = rte->lo & 0xFFFFF000;
+        cte_phy = rte->lo & 0xFFFFFFFFFFFFF000;
         cte = get_context_entry(cte_phy);
         
         offset = (dev * 8) + func;
