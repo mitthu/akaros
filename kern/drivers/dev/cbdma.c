@@ -516,13 +516,8 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         printk("[kern] ucbdma: user: %p kern: %p\n", u, _u);
  
         /* preparing descriptors */
-        d->src_addr             = (uint64_t) PADDR(uptr_to_kptr((void*) d->src_addr));
-        d->dest_addr            = (uint64_t) PADDR(uptr_to_kptr((void*) d->dest_addr));
-        d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
-                                  CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
-
-        /* zero out status */
-        _u->status = 0;
+        d->src_addr   = (uint64_t) PADDR(uptr_to_kptr((void*) d->src_addr));
+        d->dest_addr  = (uint64_t) PADDR(uptr_to_kptr((void*) d->dest_addr));
 
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition
@@ -534,7 +529,7 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         write64((uint64_t) PADDR(d), mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* writing valid number of descs: starts the DMA */
-        write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
+        write16(_u->ndesc, mmio + CBDMA_DMACOUNT_OFFSET);
 
         /* wait for completion */
         while (((_u->status) & IOAT_CHANSTS_STATUS)
@@ -563,15 +558,8 @@ static void issue_dma_vaddr(struct ucbdma *u) {
 
         printk("[kern] IOMMU = ON\n");
 
-        printk("[kern] ucbdma: user: %p kern: %p\n", u, &u->desc);
+        printk("[kern] ucbdma: user: %p kern: %p ndesc: %d\n", u, &u->desc, _u->ndesc);
  
-        /* preparing descriptors */
-        _u->desc.descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
-                                  CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
-
-        /* zero out status */
-        _u->status = 0;
-
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition
          */
@@ -582,11 +570,16 @@ static void issue_dma_vaddr(struct ucbdma *u) {
         write64((uint64_t) &u->desc, mmio + CBDMA_CHAINADDR_OFFSET);
 
         /* writing valid number of descs: starts the DMA */
-        write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
+        write16(_u->ndesc, mmio + CBDMA_DMACOUNT_OFFSET);
 
         /* wait for completion */
         while (((_u->status) & IOAT_CHANSTS_STATUS)
-                == IOAT_CHANSTS_ACTIVE) { }
+                == IOAT_CHANSTS_ACTIVE) {
+                cpu_relax();
+                if (foo)
+                        break;
+
+        }
 
         /* clear out DMACOUNT */
         write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
