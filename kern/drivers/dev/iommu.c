@@ -886,12 +886,29 @@ static void iommu_assert_all(void)
         }
 }
 
-static void iommu_populate_context_entries(void)
+static void iommu_populate_fields(void)
 {
         struct iommu *iommu;
+        uint64_t cap, ecap;
 
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                cap = read64(iommu->regio + DMAR_CAP_REG);
+                ecap = read64(iommu->regio + DMAR_ECAP_REG);
+
                 iommu->roottable = rt_init(iommu, IOMMU_DID_DEFAULT);
+                iommu->iotlb_cmd_offset = ecap_iotlb_offset(ecap) + 8;
+                iommu->iotlb_addr_offset = ecap_iotlb_offset(ecap);
+
+                if (cap_rwbf(cap))
+                        iommu->rwbf = true;
+                else
+                        iommu->rwbf = false;
+
+                if (ecap_dev_iotlb_support(ecap)) {
+                        iommu->device_iotlb = true;
+                } else
+                        iommu->device_iotlb = false;
+
         }
 }
 
@@ -901,7 +918,7 @@ void iommu_initialize_global(void)
 {
         /* fill the supported field in struct iommu */
         run_once(iommu_assert_all());
-        run_once(iommu_populate_context_entries());
+        run_once(iommu_populate_fields());
 
         iommu_enable();
 }
