@@ -656,7 +656,7 @@ static void _open_info(struct iommu *iommu, struct sized_alloc *sza)
         sza_printf(sza, "\tqemu detected = %s\n",
                 iommu->using_qemu ? "yes" : "no");
         sza_printf(sza, "\thost addr width (dmar) = %d\n", iommu->haw_dmar);
-        sza_printf(sza, "\tthost addr width (cap[mgaw]) = %d\n",
+        sza_printf(sza, "\t\thost addr width (cap[mgaw]) = %d\n",
                 iommu->haw_cap);
 
         value = read32(iommu->regio + DMAR_VER_REG);
