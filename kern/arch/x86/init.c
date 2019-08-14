@@ -35,7 +35,7 @@ static void irq_console(struct hw_trapframe *hw_tf, void *data)
 		send_kernel_message(core_id(), __run_mon, 0, 0, 0,
 				    KMSG_ROUTINE);
 		return;
-	case capchar2ctl('I'):
+	case capchar2ctl('Q'):
 		/* force you into the monitor.  you might deadlock. */
 		printk("\nForcing entry to the monitor\n");
 		monitor(hw_tf);
