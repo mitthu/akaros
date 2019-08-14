@@ -485,6 +485,7 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* write locate of first desc to register CHAINADDR */
         write64((uint64_t) PADDR(channel0.pdesc), mmio + CBDMA_CHAINADDR_OFFSET);
+        wmb_f();
 
         /* writing valid number of descs: starts the DMA */
         write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
@@ -602,6 +603,7 @@ static void issue_dma_vaddr(struct ucbdma *u) {
 
         /* write locate of first desc to register CHAINADDR */
         write64((uint64_t) &u->desc, mmio + CBDMA_CHAINADDR_OFFSET);
+        wmb_f();
 
         /* writing valid number of descs: starts the DMA */
         write16(_u->ndesc, mmio + CBDMA_DMACOUNT_OFFSET);
