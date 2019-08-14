@@ -112,12 +112,12 @@ void dump_ucbdma(struct ucbdma *ucbdma)
 	printf("[user] \tstatus: 0x%llx\n", ucbdma->status);
 }
 
-void attach_device(void)
+void attach_device(char *pcistr)
 {
 	int fd = open("/sys/iommu/attach", O_RDWR);
 	char buf[1024];
 
-	sprintf(buf, "%s %d\n", PCI_DEV, getpid());
+	sprintf(buf, "%s %d\n", pcistr, getpid());
 	write(fd, buf, strlen(buf));
 
 	close(fd);
@@ -125,22 +125,31 @@ void attach_device(void)
 	system("cat /sys/iommu/mappings");
 }
 
-void detach_device(void)
+void detach_device(char *pcistr)
 {
 	int fd = open("/sys/iommu/detach", O_RDWR);
 
-	write(fd, PCI_DEV, strlen(PCI_DEV));
+	write(fd, pcistr, strlen(pcistr));
 
 	close(fd);
 }
 
-int main()
+int main(int argc, char **argv)
 {
 	char *region;
 	struct ucbdma *ucbdma;
 	char src[BUFFERSIZE], dst[BUFFERSIZE];
+	char *pcistr;
 
-	attach_device();
+	if (argc < 2) {
+		printf("exmaple:\n");
+		printf("\tucbdma 04:00.7\n");
+		exit(1);
+	}
+	pcistr = argv[1];
+
+	printf("got device: %s\n", pcistr);
+	attach_device(pcistr);
 	
 	/* setup src and dst buffers */
 	fill_buffer(src, '1', BUFFERSIZE);
@@ -175,7 +184,7 @@ int main()
 	/* cleanup */
 	unmap_page(region);
 
-	detach_device();
+	detach_device(pcistr);
 
 	return 0;
 }
