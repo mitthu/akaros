@@ -272,7 +272,7 @@ static void setup_page_tables(struct proc *p, struct pci_device *d)
                 | (did << CTX_HI_DID_SHIFT) // DID bit: 72 to 87
                 | (CTX_AW_L4 << CTX_HI_AW_SHIFT); // AW
 
-        cte->lo = p->env_pgdir.eptp /* assumes page alignment */
+        cte->lo = PTE_ADDR(p->env_pgdir.eptp)
                 | (0x0 << CTX_LO_TRANS_SHIFT)
                 | (0x1 << CTX_LO_FPD_SHIFT) // disable faults
                 | (0x1 << CTX_LO_PRESET_SHIFT); /* mark present */
