@@ -19,6 +19,7 @@ returns a KVA, which you can convert to a phys addr with PADDR().
 
 #define CBDMA_DESC_CTRL_INTR_ON_COMPLETION           	0x00000001
 #define CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION  	0x00000008
+#define CBDMA_DESC_CTRL_NULL_DESC  			0x20
 
 /* Get the 2^20th page number. 2^20 * 4k = 4GB */
 #define PAGENUM (1 << 20)
@@ -106,6 +107,7 @@ void dump_ucbdma(struct ucbdma *ucbdma)
 	printf("[user] \tdesc->xref_size: %d\n", ucbdma->desc.xfer_size);
 	printf("[user] \tdesc->src_addr: %p\n", ucbdma->desc.src_addr);
 	printf("[user] \tdesc->dest_addr: %p\n", ucbdma->desc.dest_addr);
+	printf("[user] \tdesc->next_desc_addr: %p\n", ucbdma->desc.next_desc_addr);
 	printf("[user] \tndesc: %d\n", ucbdma->ndesc);
 	printf("[user] \tstatus: 0x%llx\n", ucbdma->status);
 }
@@ -159,6 +161,7 @@ int main()
 	ucbdma->desc.xfer_size = BUFFERSIZE;
 	ucbdma->desc.src_addr  = (uint64_t) src;
 	ucbdma->desc.dest_addr = (uint64_t) dst;
+	ucbdma->desc.next_desc_addr = (uint64_t) &ucbdma->desc;
 	ucbdma->ndesc = 1;
 
 	dump_ucbdma(ucbdma);
