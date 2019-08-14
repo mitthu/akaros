@@ -232,8 +232,8 @@ static inline bool is_initialized() {
 
 static void *get_register(struct channel *c, int offset) {
         uint64_t base = (c->number + 1) * IOAT_CHANNEL_MMIO_SIZE;
-        printk("cbdma: get_register: offset = 0x%x addr = 0x%x\n",
-                offset, (char *) mmio + base + offset);
+        // printk("cbdma: get_register: offset = 0x%x addr = 0x%x\n",
+        //         offset, (char *) mmio + base + offset);
         return (char *) mmio + base + offset;
 }
 
@@ -313,19 +313,19 @@ static void dump_desc(struct desc *d, int count) {
                         d->xfer_size);
                 printk(KERN_INFO "[32] desc->descriptor_control: 0x%x\n",
                         d->descriptor_control);
-                printk(KERN_INFO "[64] desc->src_addr: 0x%x\n",
+                printk(KERN_INFO "[64] desc->src_addr: %p\n",
                         d->src_addr);
-                printk(KERN_INFO "[64] desc->dest_addr: 0x%x\n",
+                printk(KERN_INFO "[64] desc->dest_addr: %p\n",
                         d->dest_addr);
-                printk(KERN_INFO "[64] desc->next_desc_addr: 0x%x\n",
+                printk(KERN_INFO "[64] desc->next_desc_addr: %p\n",
                         d->next_desc_addr);
-                printk(KERN_INFO "[64] desc->next_source_address: 0x%x\n",
+                printk(KERN_INFO "[64] desc->next_source_address: %p\n",
                         d->next_source_address);
-                printk(KERN_INFO "[64] desc->next_destination_address: 0x%x\n",
+                printk(KERN_INFO "[64] desc->next_destination_address: %p\n",
                         d->next_destination_address);
-                printk(KERN_INFO "[64] desc->reserved0: 0x%x\n",
+                printk(KERN_INFO "[64] desc->reserved0: %p\n",
                         d->reserved0);
-                printk(KERN_INFO "[64] desc->reserved1: 0x%x\n",
+                printk(KERN_INFO "[64] desc->reserved1: %p\n",
                         d->reserved1);
 
                 count--;
@@ -338,11 +338,11 @@ static void dump_desc(struct desc *d, int count) {
 /* initialize desc ring
  
  - Can be called multiple times, with different "ndesc" values.
- - NOTE: Max value of ndesc on x86 = 64. Reason we only allocate _one_ 4k page.
- - NOTE: The next_desc_addr of last desc, does not point to the first desc.
+ - NOTE: We only create _one_ valid desc. The next field points back itself
+         (ring buffer).
  */
 static void init_desc(struct channel *c, int ndesc) {
-        struct desc *d;
+        struct desc *d, *tmp;
         int i;
         const int max_ndesc = PGSIZE / sizeof(struct desc);
 
@@ -358,22 +358,70 @@ static void init_desc(struct channel *c, int ndesc) {
 
         /* allocate pages for descriptors, last 6-bits must be zero */
         if (!c->pdesc)
-                c->pdesc = kpage_alloc_addr();
+                c->pdesc = kpage_zalloc_addr();
 
         if (!c->pdesc) /* error does not return */
                 error(ENOMEM, "cbdma: cannot alloc page for desc");
-
-        memset(c->pdesc, 0x0, PGSIZE);
 
         /* should be always valid for page aligned addresses */
         assert((PADDR(c->pdesc) & 0x3F) == 0);
 
         /* preparing descriptors */
-        d = (struct desc *) c->pdesc;
+        d = c->pdesc;
+        d->xfer_size = 1;
+        d->descriptor_control = CBDMA_DESC_CTRL_NULL_DESC;
+        d->next_desc_addr = PADDR(d);
 
-        for (i = 0; i < c->ndesc; i++) {
-                d->next_desc_addr = PADDR(d) + ((i+1) * sizeof(struct desc));
-                d++;
+#if 0
+        // All the descriptors need to be 4k-aligned
+        for (i = 0; i < max_ndesc; i++) {
+                (d + i)->xfer_size = 1;
+                (d + i)->descriptor_control = CBDMA_DESC_CTRL_NULL_DESC;
+                (d + i)->next_desc_addr = PADDR(d) + ((i+1) * sizeof(struct desc));
+        }
+
+        printk("cbdma: i: %d kaddr(desc): %p kaddr(desc)+1: %p\n", i, d, d+1);
+        dump_desc(c->pdesc, 2);
+#endif
+}
+
+/* struct channel is only used for get_register */
+static inline void cleanup_post_copy(struct channel *c)
+{
+        uint64_t value;
+
+        /* mmio_reg: DMACOUNT */
+        value = read16(get_register(c, IOAT_CHAN_DMACOUNT_OFFSET));
+        if (value != 0) {
+                printk("cbdma: info: DMACOUNT = %d\n", value); /* should be 0 */
+                write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+        }
+
+        /* mmio_reg: CHANERR */
+        value = read32(get_register(c, IOAT_CHANERR_OFFSET));
+        if (value != 0) {
+                printk("cbdma: error: CHANERR = 0x%x\n", value);
+                write32(value, get_register(c, IOAT_CHANERR_OFFSET));
+        }
+
+        /* mmio_reg: CHANCMP */
+        // write64(0, get_register(c, IOAT_CHANCMP_OFFSET));
+
+        /* ack errors */
+        if (ACCESS_PCIE_CONFIG_SPACE) {
+                /* PCIe_reg: CHANERR_INT */
+                value = pcidev_read32(pci, CHANERR_INT);
+                if (value != 0) {
+                        printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
+                        pcidev_write32(pci, CHANERR_INT, value);
+                }
+
+                /* PCIe_reg: DMAUNCERRSTS */
+                value = pcidev_read32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET);
+                if (value != 0) {
+                        printk("cbdma: error: DMAUNCERRSTS = 0x%x\n", value);
+                        pcidev_write32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET, value);
+                }
         }
 }
 
@@ -407,6 +455,8 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
                 did_run = true;
         }
 
+        I_AM_HERE;
+
         /* initialize src and dst address */
         memset(ktest.src, ktest.srcfill, KTEST_SIZE);
         memset(ktest.dst, ktest.dstfill, KTEST_SIZE);
@@ -421,6 +471,8 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         d->descriptor_control   = CBDMA_DESC_CTRL_INTR_ON_COMPLETION |
                                   CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION;
 
+        // dump_desc(d, 1);
+
         /* old desc */
         memset((uint64_t *)channel0.status, 0, sizeof(channel0.status));
 
@@ -430,17 +482,10 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         write64(PADDR(channel0.status),
                 get_register(&channel0, IOAT_CHANCMP_OFFSET));
 
-        /* get updated: DMACOUNT */
-        // value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        // printk("\tDMACOUNT: 0x%x\n", value);
-
-        // write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
-
-        // value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        // printk("\tDMACOUNT: 0x%x\n", value);
 
         /* write locate of first desc to register CHAINADDR */
         write64((uint64_t) PADDR(channel0.pdesc), mmio + CBDMA_CHAINADDR_OFFSET);
+        wmb_f();
 
         /* writing valid number of descs: starts the DMA */
         write16(1, mmio + CBDMA_DMACOUNT_OFFSET);
@@ -453,15 +498,11 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
                         break;
         }
 
-        /* clear out DMACOUNT */
-        // value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
+        memset((uint64_t *)channel0.status, 0, sizeof(channel0.status));
 
-        /* ack errors */
-        value = pcidev_read32(pci, CHANERR_INT);
-        if (value != 0)
-                printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
-        pcidev_write32(pci, CHANERR_INT, value);
+        cleanup_post_copy(&channel0);
+
+        // dump_desc(d, 1);
 
         ktest.done = true; /* TODO: lock or atomic operation */
 
@@ -518,6 +559,7 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         /* preparing descriptors */
         d->src_addr   = (uint64_t) PADDR(uptr_to_kptr((void*) d->src_addr));
         d->dest_addr  = (uint64_t) PADDR(uptr_to_kptr((void*) d->dest_addr));
+        d->next_desc_addr  = (uint64_t) PADDR(uptr_to_kptr((void*) d->next_desc_addr));
 
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition
@@ -539,14 +581,7 @@ static void issue_dma_kaddr(struct ucbdma *u) {
                         break;
         }
 
-        /* clear out DMACOUNT */
-        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
-
-        /* ack errors */
-        value = pcidev_read32(pci, CHANERR_INT);
-        if (value != 0)
-                printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
-        pcidev_write32(pci, CHANERR_INT, value);
+        cleanup_post_copy(&channel0);
 }
 
 /* function that uses virtual (process) addresses to perform DMA; IOMMU = ON
@@ -558,7 +593,7 @@ static void issue_dma_vaddr(struct ucbdma *u) {
 
         printk("[kern] IOMMU = ON\n");
 
-        printk("[kern] ucbdma: user: %p kern: %p ndesc: %d\n", u, &u->desc, _u->ndesc);
+        printk("[kern] ucbdma: user: %p kern: %p ndesc: %d\n", u, &_u->desc, _u->ndesc);
  
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition
@@ -568,6 +603,7 @@ static void issue_dma_vaddr(struct ucbdma *u) {
 
         /* write locate of first desc to register CHAINADDR */
         write64((uint64_t) &u->desc, mmio + CBDMA_CHAINADDR_OFFSET);
+        wmb_f();
 
         /* writing valid number of descs: starts the DMA */
         write16(_u->ndesc, mmio + CBDMA_DMACOUNT_OFFSET);
@@ -581,14 +617,7 @@ static void issue_dma_vaddr(struct ucbdma *u) {
 
         }
 
-        /* clear out DMACOUNT */
-        write16(0, mmio + CBDMA_DMACOUNT_OFFSET);
-
-        /* ack errors */
-        value = pcidev_read32(pci, CHANERR_INT);
-        if (value != 0)
-                printk("cbdma: error: CHANERR_INT = 0x%x\n", value);
-        pcidev_write32(pci, CHANERR_INT, value);
+        cleanup_post_copy(&channel0);
 }
 
 #if 0
@@ -817,10 +846,10 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
 
         /* get updated: DMACOUNT */
         value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        iter = seprintf(iter, ebuf, "\tDMACOUNT: 0x%x\n", value);
+        iter = seprintf(iter, ebuf, "\tDMACOUNT: %d\n", value);
 
         /* get updated: CHANERR */
-        value = 0; value = read16(mmio + CBDMA_CHANERR_OFFSET);
+        value = 0; value = read32(mmio + CBDMA_CHANERR_OFFSET);
         iter = seprintf(iter, ebuf, "\tCHANERR: 0x%x\n", value);
 
         *iter   = '\0';
@@ -848,14 +877,16 @@ static void cbdma_reset_device() {
         error = read32(mmio + CBDMA_CHANERR_OFFSET);
         write32(error, mmio + CBDMA_CHANERR_OFFSET);
 
-        /* ack pci device level errros */
-        /* clear DMA Cluster Uncorrectable Error Status */
-        error = pcidev_read32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET);
-        pcidev_write32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET, error);
+        if (ACCESS_PCIE_CONFIG_SPACE) {
+                /* ack pci device level errros */
+                /* clear DMA Cluster Uncorrectable Error Status */
+                error = pcidev_read32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET);
+                pcidev_write32(pci, IOAT_PCI_DMAUNCERRSTS_OFFSET, error);
 
-        /* clear DMA Channel Error Status */
-        error = pcidev_read32(pci, IOAT_PCI_CHANERR_INT_OFFSET);
-        pcidev_write32(pci, IOAT_PCI_CHANERR_INT_OFFSET, error);
+                /* clear DMA Channel Error Status */
+                error = pcidev_read32(pci, IOAT_PCI_CHANERR_INT_OFFSET);
+                pcidev_write32(pci, IOAT_PCI_CHANERR_INT_OFFSET, error);
+        }
 
         /* reset */
         write8(IOAT_CHANCMD_RESET, mmio
@@ -940,7 +971,7 @@ static void init_channel(struct channel *c, int cnum, int ndesc) {
         c->pdesc = NULL;
         init_desc(c, ndesc);
         
-        printk(KERN_INFO "cbdma: done init_desc\n");
+        // printk(KERN_INFO "cbdma: done init_desc\n");
         
         /* this is a writeback field; the hardware will update this value */
         if (c->status == 0)
@@ -949,7 +980,7 @@ static void init_channel(struct channel *c, int cnum, int ndesc) {
         assert(c->status != 0);
         assert((c->status & 0x7) == 0);
 
-        printk(KERN_INFO "cbdma: c->status = %x\n", c->status);
+        // printk(KERN_INFO "cbdma: c->status = %p\n", c->status);
 
         /* cbdma version */
         c->ver = read8(mmio + IOAT_VER_OFFSET);
@@ -962,11 +993,6 @@ static void init_channel(struct channel *c, int cnum, int ndesc) {
         */
         write8(IOAT_CHANCTRL_ANY_ERR_ABORT_EN | IOAT_CHANCTRL_ERR_COMPLETION_EN,
                get_register(c, IOAT_CHANCTRL_OFFSET));
-
-        /* Set channel completion register where CBDMA will write content of
-         * CHANSTS register upon successful DMA completion or error condition
-         */
-        write64(PADDR(c->status), get_register(c, IOAT_CHANCMP_OFFSET));
 }
 
 static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
@@ -1030,13 +1056,12 @@ static void cbdma_interrupt(struct hw_trapframe *hw_tf, void *arg)
         I_AM_HERE;
         
         value = read16(get_register(&channel0, IOAT_CHANCTRL_OFFSET));
-        printk("[READ] IOAT_CHANCTRL_OFFSET = 0x%x\n", value);
-        printk("[WRITE] IOAT_CHANCTRL_OFFSET = 0x%x\n", value|IOAT_CHANCTRL_INT_REARM);
+        // printk("[READ] IOAT_CHANCTRL_OFFSET = 0x%x\n", value);
+        // printk("[WRITE] IOAT_CHANCTRL_OFFSET = 0x%x\n", value|IOAT_CHANCTRL_INT_REARM);
         write16(value|IOAT_CHANCTRL_INT_REARM,
                get_register(&channel0, IOAT_CHANCTRL_OFFSET));
-        value = read16(get_register(&channel0, IOAT_CHANCTRL_OFFSET));
-        printk("[READ] IOAT_CHANCTRL_OFFSET = 0x%x\n", value);
-
+        // value = read16(get_register(&channel0, IOAT_CHANCTRL_OFFSET));
+        // printk("[READ] IOAT_CHANCTRL_OFFSET = 0x%x\n", value);
 }
 
 void cbdmainit(void) {

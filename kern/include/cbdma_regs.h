@@ -5,6 +5,8 @@
 #ifndef _IOAT_REGISTERS_H_
 #define _IOAT_REGISTERS_H_
 
+#define ACCESS_PCIE_CONFIG_SPACE 1
+
 /* file: drivers/dma/ioat/hw.h */
 #define IOAT_VER_1_2            0x12    /* Version 1.2 */
 #define IOAT_VER_2_0            0x20    /* Version 2.0 */
@@ -251,8 +253,9 @@
 #define CBDMA_CHAINADDR_OFFSET	 			0x90
 #define CBDMA_CHANCMP_OFFSET	 			0x98
 #define CBDMA_CHANERR_OFFSET  	 			0xa8
-#define CBDMA_DESC_CTRL_INTR_ON_COMPLETION           	0x00000001
-#define CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION  	0x00000008
+#define CBDMA_DESC_CTRL_INTR_ON_COMPLETION           	0x01 /* 32-bit field */
+#define CBDMA_DESC_CTRL_WRITE_CHANCMP_ON_COMPLETION  	0x08
+#define CBDMA_DESC_CTRL_NULL_DESC  			0x20
 
 #define IOAT_CHANSTS_ARMED 0x4
 
