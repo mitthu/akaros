@@ -103,7 +103,8 @@ void fill_buffer(char *buffer, char c, int size)
 
 void dump_ucbdma(struct ucbdma *ucbdma)
 {
-	printf("[user] ucbdma: %p\n", ucbdma);
+	printf("[user] ucbdma: %p, size: %d (or 0x%x)\n", ucbdma,
+		sizeof(struct ucbdma), sizeof(struct ucbdma));
 	printf("[user] \tdesc->xref_size: %d\n", ucbdma->desc.xfer_size);
 	printf("[user] \tdesc->src_addr: %p\n", ucbdma->desc.src_addr);
 	printf("[user] \tdesc->dest_addr: %p\n", ucbdma->desc.dest_addr);
@@ -138,12 +139,12 @@ int main(int argc, char **argv)
 {
 	char *region;
 	struct ucbdma *ucbdma;
-	char src[BUFFERSIZE], dst[BUFFERSIZE];
+	char *src, *dst;
 	char *pcistr;
 
 	if (argc < 2) {
 		printf("exmaple:\n");
-		printf("\tucbdma 04:00.7\n");
+		printf("\tucbdma 00:04.7\n");
 		exit(1);
 	}
 	pcistr = argv[1];
@@ -151,15 +152,17 @@ int main(int argc, char **argv)
 	printf("got device: %s\n", pcistr);
 	attach_device(pcistr);
 	
+	/* map page for placing ucbdma */
+	region = map_page();
+	// test_mmap(region);
+
 	/* setup src and dst buffers */
+	src = region + sizeof(struct ucbdma) + 100; 
+	dst = region + sizeof(struct ucbdma) + 100 + BUFFERSIZE; 
 	fill_buffer(src, '1', BUFFERSIZE);
 	fill_buffer(dst, '0', BUFFERSIZE);
 	printf("[user] src: %s\n", src);
 	printf("[user] dst: %s\n", dst);
-
-	/* map page for placing ucbdma */
-	region = map_page();
-	// test_mmap(region);
 
 	/* setup ucbdma*/
 	ucbdma = (struct ucbdma *) region;
