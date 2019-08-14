@@ -960,7 +960,6 @@ static bool iommu_assert_required_capabilities(struct iommu *iommu)
         if (iommu->haw_cap != iommu->haw_dmar) {
                 printk(IOMMU "%p: HAW mismatch; DAMR reports %d, CAP reports %d\n",
                         iommu, iommu->haw_dmar, iommu->haw_cap);
-                result = false;
         }
 
         /* mark the iommu as not supported, if any required cap is present */
