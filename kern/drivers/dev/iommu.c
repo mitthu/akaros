@@ -95,7 +95,7 @@
 #include <linux_compat.h>
 
 #define IOMMU "iommu: "
-#define BUFFERSZ 4096
+#define BUFFERSZ 8192
 
 struct dev iommudevtab;
 struct iommu_list_tq iommu_list = TAILQ_HEAD_INITIALIZER(iommu_list);
