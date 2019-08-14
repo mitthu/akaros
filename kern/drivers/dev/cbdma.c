@@ -592,7 +592,7 @@ static void issue_dma_vaddr(struct ucbdma *u) {
 
         printk("[kern] IOMMU = ON\n");
 
-        printk("[kern] ucbdma: user: %p kern: %p ndesc: %d\n", u, &u->desc, _u->ndesc);
+        printk("[kern] ucbdma: user: %p kern: %p ndesc: %d\n", u, &_u->desc, _u->ndesc);
  
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition

@@ -5,7 +5,7 @@
 #ifndef _IOAT_REGISTERS_H_
 #define _IOAT_REGISTERS_H_
 
-#define ACCESS_PCIE_CONFIG_SPACE 0
+#define ACCESS_PCIE_CONFIG_SPACE 1
 
 /* file: drivers/dma/ioat/hw.h */
 #define IOAT_VER_1_2            0x12    /* Version 1.2 */

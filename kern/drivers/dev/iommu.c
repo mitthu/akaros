@@ -552,12 +552,12 @@ static int write_add_dev(char *va, size_t n)
         pid_t pid;
 
         err = sscanf(va, "%x:%x.%x %d\n", &bus, &dev, &func, &pid);
-        // printk(IOMMU "parsed:\n"
-        //         "\tb = %x\n"
-        //         "\td = %x\n"
-        //         "\tf = %x\n"
-        //         "\tpid = %d\n",
-        //         bus, dev, func, pid);
+        printk(IOMMU "parsed:\n"
+                "\tb = %x\n"
+                "\td = %x\n"
+                "\tf = %x\n"
+                "\tpid = %d\n",
+                bus, dev, func, pid);
 
         if (err != 4)
                 error(EIO,
