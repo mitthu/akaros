@@ -313,19 +313,19 @@ static void dump_desc(struct desc *d, int count) {
                         d->xfer_size);
                 printk(KERN_INFO "[32] desc->descriptor_control: 0x%x\n",
                         d->descriptor_control);
-                printk(KERN_INFO "[64] desc->src_addr: 0x%x\n",
+                printk(KERN_INFO "[64] desc->src_addr: %p\n",
                         d->src_addr);
-                printk(KERN_INFO "[64] desc->dest_addr: 0x%x\n",
+                printk(KERN_INFO "[64] desc->dest_addr: %p\n",
                         d->dest_addr);
-                printk(KERN_INFO "[64] desc->next_desc_addr: 0x%x\n",
+                printk(KERN_INFO "[64] desc->next_desc_addr: %p\n",
                         d->next_desc_addr);
-                printk(KERN_INFO "[64] desc->next_source_address: 0x%x\n",
+                printk(KERN_INFO "[64] desc->next_source_address: %p\n",
                         d->next_source_address);
-                printk(KERN_INFO "[64] desc->next_destination_address: 0x%x\n",
+                printk(KERN_INFO "[64] desc->next_destination_address: %p\n",
                         d->next_destination_address);
-                printk(KERN_INFO "[64] desc->reserved0: 0x%x\n",
+                printk(KERN_INFO "[64] desc->reserved0: %p\n",
                         d->reserved0);
-                printk(KERN_INFO "[64] desc->reserved1: 0x%x\n",
+                printk(KERN_INFO "[64] desc->reserved1: %p\n",
                         d->reserved1);
 
                 count--;
@@ -558,6 +558,7 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         /* preparing descriptors */
         d->src_addr   = (uint64_t) PADDR(uptr_to_kptr((void*) d->src_addr));
         d->dest_addr  = (uint64_t) PADDR(uptr_to_kptr((void*) d->dest_addr));
+        d->next_desc_addr  = (uint64_t) PADDR(uptr_to_kptr((void*) d->next_desc_addr));
 
         /* Set channel completion register where CBDMA will write content of
          * CHANSTS register upon successful DMA completion or error condition
@@ -578,7 +579,6 @@ static void issue_dma_kaddr(struct ucbdma *u) {
                 if (foo)
                         break;
         }
-        memset((uint64_t *)_u->status, 0, sizeof(channel0.status));
 
         cleanup_post_copy(&channel0);
 }
@@ -614,7 +614,6 @@ static void issue_dma_vaddr(struct ucbdma *u) {
                         break;
 
         }
-        memset((uint64_t *)_u->status, 0, sizeof(channel0.status));
 
         cleanup_post_copy(&channel0);
 }
