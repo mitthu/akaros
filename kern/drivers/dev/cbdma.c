@@ -76,6 +76,7 @@ static uint64_t           mmio_phy; /* physical addr */
 static uint32_t           mmio_sz;
 static uint8_t            chancnt; /* Total number of channels per function */
 static bool               iommu_enabled = false;
+static bool               cbdma_break_loop; /* toggle_foo functionality */
 
 /* PCIe Config Space; from Intel Xeon E7 2800/4800/8800 Datasheet Vol. 2 */
 enum {
@@ -222,6 +223,12 @@ static void write_64(char *base, int offset, uint64_t value) {
   asm volatile("mfence");
 }
 #endif
+
+/* for debugging via kfunc; break out of infinite polling loops */
+void toggle_foo() {
+        cbdma_break_loop = !cbdma_break_loop;
+        printk("cbdma: cbdma_break_loop = %d\n", cbdma_break_loop);
+}
 
 /* Function definitions start here */
 static inline bool is_initialized() {
@@ -424,11 +431,6 @@ static inline void cleanup_post_copy(struct channel *c)
  - Verify results
  - Print stats
  */ 
-static bool foo;
-void toggle_foo() {
-        foo = !foo;
-        printk("cbdma: foo = %d\n", foo);
-}
 static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         static struct desc *d;
         char *ebuf = ktest.printbuf + sizeof(ktest.printbuf);
@@ -484,7 +486,7 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         while (((*(uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS)
                 == IOAT_CHANSTS_ACTIVE) {
                 cpu_relax();
-                if (foo)
+                if (cbdma_break_loop)
                         break;
         }
 
@@ -567,7 +569,7 @@ static void issue_dma_kaddr(struct ucbdma *u) {
         while (((_u->status) & IOAT_CHANSTS_STATUS)
                 == IOAT_CHANSTS_ACTIVE) {
                 cpu_relax();
-                if (foo)
+                if (cbdma_break_loop)
                         break;
         }
 
@@ -602,7 +604,7 @@ static void issue_dma_vaddr(struct ucbdma *u) {
         while (((_u->status) & IOAT_CHANSTS_STATUS)
                 == IOAT_CHANSTS_ACTIVE) {
                 cpu_relax();
-                if (foo)
+                if (cbdma_break_loop)
                         break;
 
         }
