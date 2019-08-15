@@ -7,6 +7,9 @@
 
 #define ACCESS_PCIE_CONFIG_SPACE 1
 
+bool cbdma_is_reset_pending(void);
+void cbdma_reset_device(void);
+
 /* file: drivers/dma/ioat/hw.h */
 #define IOAT_VER_1_2            0x12    /* Version 1.2 */
 #define IOAT_VER_2_0            0x20    /* Version 2.0 */
