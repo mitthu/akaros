@@ -606,7 +606,6 @@ static void issue_dma_vaddr(struct ucbdma *u) {
                 cpu_relax();
                 if (cbdma_break_loop)
                         break;
-
         }
 
         cleanup_post_copy(&channel0);
