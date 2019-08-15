@@ -55,6 +55,45 @@ static struct dirtab iommudir[] = {
 };
 
 /////// START: ROOT TABLE //////////////////////////////////////////////////////
+/* this is might be necessary when updating mapping structures: context-cache,
+   IOTLB or IEC */
+static inline void write_buffer_flush(struct iommu *iommu)
+{
+        uint32_t volatile cmd, status;
+
+        if (!iommu->rwbf)
+                return;
+
+        cmd = read32(iommu->regio + DMAR_GCMD_REG) | DMA_GCMD_WBF;
+        write32(cmd, iommu->regio + DMAR_GCMD_REG);
+
+        /* read status */
+        do {
+                status = read32(iommu->regio + DMAR_GSTS_REG);
+        } while (status & DMA_GSTS_WBFS);
+}
+
+/* this is necessary when caching mode is supported.
+   ASSUMES: no pending flush requests */
+static inline void iotlb_flush(struct iommu *iommu, uint16_t did)
+{
+        uint64_t volatile cmd, status;
+
+        cmd = 0x0
+        | DMA_TLB_IVT        /* issue the flush command */
+        | DMA_TLB_DSI_FLUSH  /* DID specific shootdown */
+        | DMA_TLB_READ_DRAIN
+        | DMA_TLB_WRITE_DRAIN
+        | DMA_TLB_DID(did);
+        write64(cmd, iommu->regio + iommu->iotlb_cmd_offset);
+
+        /* read status */
+        do {
+                status = read64(iommu->regio + iommu->iotlb_cmd_offset);
+                status >>= 63; /* bit 64 (IVT): gets cleared on completion */
+        } while (status);
+}
+
 static inline struct root_entry *get_root_entry(physaddr_t paddr)
 {
         return (struct root_entry *) KADDR(paddr);
@@ -765,9 +804,26 @@ static void iommu_assert_all(void)
 static void iommu_populate_fields(void)
 {
         struct iommu *iommu;
+        uint64_t cap, ecap;
 
         TAILQ_FOREACH(iommu, &iommu_list, iommu_link) {
+                cap = read64(iommu->regio + DMAR_CAP_REG);
+                ecap = read64(iommu->regio + DMAR_ECAP_REG);
+
                 iommu->roottable = rt_init(iommu, IOMMU_DID_DEFAULT);
+                iommu->iotlb_cmd_offset = ecap_iotlb_offset(ecap) + 8;
+                iommu->iotlb_addr_offset = ecap_iotlb_offset(ecap);
+
+                if (cap_rwbf(cap))
+                        iommu->rwbf = true;
+                else
+                        iommu->rwbf = false;
+
+                if (ecap_dev_iotlb_support(ecap)) {
+                        iommu->device_iotlb = true;
+                } else
+                        iommu->device_iotlb = false;
+
         }
 }
 
