@@ -67,6 +67,7 @@
 #include <arch/pci_regs.h>
 
 #define NDESC 1 // initialize these many descs
+#define BUFFERSZ 8192
 
 struct dev                cbdmadevtab;
 static struct pci_device  *pci;
@@ -258,17 +259,6 @@ struct walkqid *cbdmawalk(struct chan *c, struct chan *nc, char **name,
  */
 static size_t cbdmastat(struct chan *c, uint8_t *dp, size_t n) {
         return devstat(c, dp, n, cbdmadir, ARRAY_SIZE(cbdmadir), devgen);
-}
-
-static struct chan *cbdmaopen(struct chan *c, int omode) {
-        return devopen(c, omode, cbdmadir, ARRAY_SIZE(cbdmadir), devgen);
-}
-
-/*
- * All files are synthetic. Hence we do not need to implement any close
- * function.
- */
-static void cbdmaclose(struct chan *_) {
 }
 
 /* return string representation of chansts */
@@ -729,20 +719,18 @@ done:
 
 /* cbdma_stats: get stats about the device and driver
  */
-static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
-        char buf[4096]; /* TODO: parameterize size */
-        char *ebuf = buf + sizeof(buf);
-        char *iter = buf;
+static struct sized_alloc *open_stats(void)
+{
+        struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
         uint64_t value;
-        const uint8_t width = 20; /* width of register name column */
 
-        iter = seprintf(iter, ebuf,
+        sza_printf(sza,
                 "Intel CBDMA [%x:%x] registered at %02x:%02x.%x\n",
                 pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func);
 
         /* driver info. */
-        iter = seprintf(iter, ebuf, "    Driver Information:\n");
-        iter = seprintf(iter, ebuf,
+        sza_printf(sza, "    Driver Information:\n");
+        sza_printf(sza,
                 "\tmmio: %p\n"
                 "\tmmio_phy: 0x%x\n"
                 "\tmmio_sz: %lu\n"
@@ -760,76 +748,76 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
                 *(uint64_t *)channel0.status);
 
         /* print the PCI registers */
-        iter = seprintf(iter, ebuf, "    PCIe Config Registers:\n");
+        sza_printf(sza, "    PCIe Config Registers:\n");
 
-        value = 0; value = pcidev_read16(pci, PCI_CMD_REG);
-        iter = seprintf(iter, ebuf, "\tPCICMD: 0x%x\n", value);
+        value = pcidev_read16(pci, PCI_CMD_REG);
+        sza_printf(sza, "\tPCICMD: 0x%x\n", value);
 
-        value = 0; value = pcidev_read16(pci, PCI_STATUS_REG);
-        iter = seprintf(iter, ebuf, "\tPCISTS: 0x%x\n", value);
+        value = pcidev_read16(pci, PCI_STATUS_REG);
+        sza_printf(sza, "\tPCISTS: 0x%x\n", value);
 
-        value = 0; value = pcidev_read16(pci, PCI_REVID_REG);
-        iter = seprintf(iter, ebuf, "\tRID: 0x%x\n", value);
+        value = pcidev_read16(pci, PCI_REVID_REG);
+        sza_printf(sza, "\tRID: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, PCI_BAR0_STD);
-        iter = seprintf(iter, ebuf, "\tCB_BAR: 0x%x\n", value);
+        value = pcidev_read32(pci, PCI_BAR0_STD);
+        sza_printf(sza, "\tCB_BAR: 0x%x\n", value);
 
-        value = 0; value = pcidev_read16(pci, DEVSTS);
-        iter = seprintf(iter, ebuf, "\tDEVSTS: 0x%x\n", value);
+        value = pcidev_read16(pci, DEVSTS);
+        sza_printf(sza, "\tDEVSTS: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, PMCSR);
-        iter = seprintf(iter, ebuf, "\tPMCSR: 0x%x\n", value);
+        value = pcidev_read32(pci, PMCSR);
+        sza_printf(sza, "\tPMCSR: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, DMAUNCERRSTS);
-        iter = seprintf(iter, ebuf, "\tDMAUNCERRSTS: 0x%x\n", value);
+        value = pcidev_read32(pci, DMAUNCERRSTS);
+        sza_printf(sza, "\tDMAUNCERRSTS: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, DMAUNCERRMSK);
-        iter = seprintf(iter, ebuf, "\tDMAUNCERRMSK: 0x%x\n", value);
+        value = pcidev_read32(pci, DMAUNCERRMSK);
+        sza_printf(sza, "\tDMAUNCERRMSK: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, DMAUNCERRSEV);
-        iter = seprintf(iter, ebuf, "\tDMAUNCERRSEV: 0x%x\n", value);
+        value = pcidev_read32(pci, DMAUNCERRSEV);
+        sza_printf(sza, "\tDMAUNCERRSEV: 0x%x\n", value);
 
-        value = 0; value = pcidev_read8(pci, DMAUNCERRPTR);
-        iter = seprintf(iter, ebuf, "\tDMAUNCERRPTR: 0x%x\n", value);
+        value = pcidev_read8(pci, DMAUNCERRPTR);
+        sza_printf(sza, "\tDMAUNCERRPTR: 0x%x\n", value);
 
-        value = 0; value = pcidev_read8(pci, DMAGLBERRPTR);
-        iter = seprintf(iter, ebuf, "\tDMAGLBERRPTR: 0x%x\n", value);
+        value = pcidev_read8(pci, DMAGLBERRPTR);
+        sza_printf(sza, "\tDMAGLBERRPTR: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, CHANERR_INT);
-        iter = seprintf(iter, ebuf, "\tCHANERR_INT: 0x%x\n", value);
+        value = pcidev_read32(pci, CHANERR_INT);
+        sza_printf(sza, "\tCHANERR_INT: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, CHANERRMSK_INT);
-        iter = seprintf(iter, ebuf, "\tCHANERRMSK_INT: 0x%x\n", value);
+        value = pcidev_read32(pci, CHANERRMSK_INT);
+        sza_printf(sza, "\tCHANERRMSK_INT: 0x%x\n", value);
 
-        value = 0; value = pcidev_read32(pci, CHANERRSEV_INT);
-        iter = seprintf(iter, ebuf, "\tCHANERRSEV_INT: 0x%x\n", value);
+        value = pcidev_read32(pci, CHANERRSEV_INT);
+        sza_printf(sza, "\tCHANERRSEV_INT: 0x%x\n", value);
 
-        value = 0; value = pcidev_read8(pci, CHANERRPTR);
-        iter = seprintf(iter, ebuf, "\tCHANERRPTR: 0x%x\n", value);
+        value = pcidev_read8(pci, CHANERRPTR);
+        sza_printf(sza, "\tCHANERRPTR: 0x%x\n", value);
 
         /* ----------------------------------------------------- */
 
         /* print the CHANNEL_0 MMIO registers */
-        iter = seprintf(iter, ebuf, "    CHANNEL_0 MMIO Registers:\n");
+        sza_printf(sza, "    CHANNEL_0 MMIO Registers:\n");
 
         /* get updated: CHANCMD */
-        value = 0; value = read8(mmio + CBDMA_CHANCMD_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANCMD: 0x%x\n", value);
+        value = read8(mmio + CBDMA_CHANCMD_OFFSET);
+        sza_printf(sza, "\tCHANCMD: 0x%x\n", value);
 
         /* get updated: CBVER */
-        value = 0; value = read8(mmio + IOAT_VER_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCBVER: 0x%x major=%d minor=%d\n",
+        value = read8(mmio + IOAT_VER_OFFSET);
+        sza_printf(sza, "\tCBVER: 0x%x major=%d minor=%d\n",
                 value,
                 GET_IOAT_VER_MAJOR(value),
                 GET_IOAT_VER_MINOR(value));
 
         /* get updated: CHANCTRL */
-        value = 0; value = read16(mmio + CBDMA_CHANCTRL_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANCTRL: 0x%llx\n", value);
+        value = read16(mmio + CBDMA_CHANCTRL_OFFSET);
+        sza_printf(sza, "\tCHANCTRL: 0x%llx\n", value);
 
         /* get updated: CHANSTS */
-        value = 0; value = read64(mmio + CBDMA_CHANSTS_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANSTS: 0x%x [%s], desc_addr: %p, "
+        value = read64(mmio + CBDMA_CHANSTS_OFFSET);
+        sza_printf(sza, "\tCHANSTS: 0x%x [%s], desc_addr: %p, "
                 "raw: 0x%llx\n",
                 (value & IOAT_CHANSTS_STATUS),
                 cbdma_str_chansts(value),
@@ -837,28 +825,52 @@ static size_t cbdma_stats(struct chan *c, void *va, size_t n, off64_t offset) {
                 value);
 
         /* get updated: CHAINADDR */
-        value = 0; value = read64(mmio + CBDMA_CHAINADDR_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHAINADDR: %p\n", value);
+        value = read64(mmio + CBDMA_CHAINADDR_OFFSET);
+        sza_printf(sza, "\tCHAINADDR: %p\n", value);
 
         /* get updated: CHANCMP */
-        value = 0; value = read64(mmio + CBDMA_CHANCMP_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANCMP: %p\n", value);
+        value = read64(mmio + CBDMA_CHANCMP_OFFSET);
+        sza_printf(sza, "\tCHANCMP: %p\n", value);
 
         /* get updated: DMACOUNT */
-        value = 0; value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
-        iter = seprintf(iter, ebuf, "\tDMACOUNT: %d\n", value);
+        value = read16(mmio + CBDMA_DMACOUNT_OFFSET);
+        sza_printf(sza, "\tDMACOUNT: %d\n", value);
 
         /* get updated: CHANERR */
-        value = 0; value = read32(mmio + CBDMA_CHANERR_OFFSET);
-        iter = seprintf(iter, ebuf, "\tCHANERR: 0x%x\n", value);
+        value = read32(mmio + CBDMA_CHANERR_OFFSET);
+        sza_printf(sza, "\tCHANERR: 0x%x\n", value);
 
-        *iter   = '\0';
-        return readstr(offset, va, n, buf);
+        return sza;
+}
+
+static struct sized_alloc *open_reset(void)
+{
+        struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
+
+        if (cbdma_is_reset_pending())
+                sza_printf(sza, "Status: Reset is pending\n");
+        else
+                sza_printf(sza, "Status: No pending reset\n");
+
+        sza_printf(sza, "Write '1' to perform reset!\n");
+
+        return sza;
+}
+
+static struct sized_alloc *open_iommu(void)
+{
+        struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
+
+        sza_printf(sza, "IOMMU enabled = %s\n", iommu_enabled ? "yes":"no");
+        sza_printf(sza, "Write '0' to disable or '1' to enable the IOMMU\n");
+
+        return sza;
 }
 
 /* cbdma_reset_device: this fixes any programming errors done before
  */
-static void cbdma_reset_device() {
+void cbdma_reset_device(void)
+{
         int cbdmaver;
         uint32_t error;
 
@@ -901,7 +913,8 @@ static void cbdma_reset_device() {
 
 /* cbdma_is_reset_pending: returns true if reset is pending
  */
-static bool cbdma_is_reset_pending() {
+bool cbdma_is_reset_pending(void)
+{
         int cbdmaver;
         int status;
 
@@ -920,47 +933,77 @@ static bool cbdma_is_reset_pending() {
         return (status & IOAT_CHANCMD_RESET) == IOAT_CHANCMD_RESET;
 }
 
+///////// SYS INTERFACE ////////////////////////////////////////////////////////
+
+static struct chan *cbdmaopen(struct chan *c, int omode)
+{
+        switch (c->qid.path) {
+        case Qcbdmastats:
+                c->synth_buf = open_stats();
+                break;
+
+        case Qcbdmareset:
+                c->synth_buf = open_reset();
+                break;
+
+        case Qcbdmaiommu:
+                c->synth_buf = open_iommu();
+                break;
+
+        case Qdir:
+        case Qcbdmaktest:
+        case Qcbdmaucopy:
+                break;
+
+        default:
+                error(EIO, "cbdma: qid 0x%x is impossible", c->qid.path);
+        }
+
+        return devopen(c, omode, cbdmadir, ARRAY_SIZE(cbdmadir), devgen);
+}
+
+static void cbdmaclose(struct chan *c)
+{
+        switch (c->qid.path) {
+        case Qcbdmastats:
+        case Qcbdmareset:
+        case Qcbdmaiommu:
+                kfree(c->synth_buf);
+                break;
+
+        case Qcbdmaktest:
+        case Qdir:
+        case Qcbdmaucopy:
+                break;
+
+        default:
+                error(EIO, "cbdma: qid 0x%x is impossible", c->qid.path);
+        }
+}
+
 static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
-        char buf[4096]; /* TODO: parameterize size */
-        char *ebuf = buf + sizeof(buf);
-        char *iter = buf;
+        struct sized_alloc *sza = c->synth_buf;
 
         switch (c->qid.path) {
-        case Qdir:
-                return devdirread(c, va, n, cbdmadir,
-                                  ARRAY_SIZE(cbdmadir), devgen);
 
         case Qcbdmaktest:
                 return cbdma_ktest(c, va, n, offset);
 
         case Qcbdmastats:
-                return cbdma_stats(c, va, n, offset);
-
         case Qcbdmareset:
-                if (cbdma_is_reset_pending() == TRUE)
-                        return readstr(offset, va, n,
-                                "Status: Reset Pending\n"
-                                "Write '1' to perform reset!\n");
-                else
-                        return readstr(offset, va, n,
-                                "Status: Active\n"
-                                "Write '1' to perform reset!\n");
+        case Qcbdmaiommu:
+                return readstr(offset, va, n, sza->buf);
 
         case Qcbdmaucopy:
                 return readstr(offset, va, n,
                         "Write address of struct ucopy to issue DMA.\n");
 
-        case Qcbdmaiommu:
-                iter = seprintf(iter, ebuf,
-                        "IOMMU enabled = %s || ", iommu_enabled ? "yes":"no");
-                iter = seprintf(iter, ebuf,
-                        "write '0' to disable or '1' to enable the IOMMU\n");
-
-                // printk("cbdma: iommu = %s\n", iommu_enabled ? "yes":"no");
-                return readstr(offset, va, n, buf);
+        case Qdir:
+                return devdirread(c, va, n, cbdmadir, ARRAY_SIZE(cbdmadir),
+                                        devgen);
 
         default:
-                panic("cbdmaread: qid 0x%x is impossible", c->qid.path);
+                error(EIO, "cbdma: qid 0x%x is impossible", c->qid.path);
         }
 
         return -1;      /* not reached */
