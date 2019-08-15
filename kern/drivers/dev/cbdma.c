@@ -113,7 +113,7 @@ enum {
 
 static struct dirtab cbdmadir[] = {
         {".",         {Qdir, 0, QTDIR}, 0, 0555},
-        {"ktest",     {Qcbdmaktest, 0, QTFILE}, 0, 0755},
+        {"ktest",     {Qcbdmaktest, 0, QTFILE}, 0, 0555},
         {"stats",     {Qcbdmastats, 0, QTFILE}, 0, 0555},
         {"reset",     {Qcbdmareset, 0, QTFILE}, 0, 0755},
         {"ucopy",     {Qcbdmaucopy, 0, QTFILE}, 0, 0755},
@@ -158,7 +158,6 @@ static struct channel {
 
 #define KTEST_SIZE 64
 static struct {
-        bool    done;
         char    printbuf[4096];
         char    src[KTEST_SIZE];
         char    dst[KTEST_SIZE];
@@ -431,29 +430,18 @@ static inline void cleanup_post_copy(struct channel *c)
  - Verify results
  - Print stats
  */ 
-static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
+static void cbdma_ktest(void) {
         static struct desc *d;
-        char *ebuf = ktest.printbuf + sizeof(ktest.printbuf);
-        char *iter = ktest.printbuf;
-        bool did_run;
         uint64_t value;
-
-        /* check for previously initialed ktest */
-        if(ktest.done) {
-                did_run = false;
-                goto done;
-        }
-        else {
-                did_run = true;
-        }
-
-        I_AM_HERE;
 
         /* initialize src and dst address */
         memset(ktest.src, ktest.srcfill, KTEST_SIZE);
         memset(ktest.dst, ktest.dstfill, KTEST_SIZE);
         ktest.src[KTEST_SIZE-1] = '\0';
         ktest.dst[KTEST_SIZE-1] = '\0';
+
+        /* for subsequent ktests */
+        ktest.srcfill += 1;
 
         /* preparing descriptors */
         d = channel0.pdesc;
@@ -493,39 +481,6 @@ static size_t cbdma_ktest(struct chan *c, void *va, size_t n, off64_t offset) {
         memset((uint64_t *)channel0.status, 0, sizeof(channel0.status));
 
         cleanup_post_copy(&channel0);
-
-        // dump_desc(d, 1);
-
-        ktest.done = true; /* TODO: lock or atomic operation */
-
-done:
-        iter = seprintf(iter, ebuf,
-           "Self-test Intel CBDMA [%x:%x] registered at %02x:%02x.%x\n",
-           pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func);
-
-        iter = seprintf(iter, ebuf,"\tHelp: Write 1 to re-run the test.\n");
-
-        iter = seprintf(iter, ebuf,"\tRun this time? %s\n",
-                did_run ? "Yes" : "No");
-
-        iter = seprintf(iter, ebuf,"\tCompleted? %s\n",
-                ktest.done ? "Yes" : "No");
-
-        iter = seprintf(iter, ebuf,"\tChannel Status: %s (raw: 0x%x)\n",
-                cbdma_str_chansts(*((uint64_t *)channel0.status)),
-                (*((uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS));
-
-        iter = seprintf(iter, ebuf,"\tCopy Size: %d (0x%x)\n",
-                KTEST_SIZE, KTEST_SIZE);
-
-        iter = seprintf(iter, ebuf,"\tsrcfill: %c (0x%x)\n",
-                ktest.srcfill, ktest.srcfill);
-        iter = seprintf(iter, ebuf,"\tdstfill: %c (0x%x)\n",
-                ktest.dstfill, ktest.dstfill);
-        iter = seprintf(iter, ebuf,"\tsrc_str (after copy): %s\n", ktest.src);
-        iter = seprintf(iter, ebuf,"\tdst_str (after copy): %s\n", ktest.dst);
-
-        return readstr(offset, va, n, ktest.printbuf);
 }
 
 /* convert a userspace pointer to kaddr based pointer */
@@ -868,6 +823,31 @@ static struct sized_alloc *open_iommu(void)
         return sza;
 }
 
+/* targets channel0 */
+static struct sized_alloc *open_ktest(void)
+{
+        struct sized_alloc *sza = sized_kzmalloc(BUFFERSZ, MEM_WAIT);
+
+        /* run the test */
+        cbdma_ktest();
+
+        sza_printf(sza,
+           "Self-test Intel CBDMA [%x:%x] registered at %02x:%02x.%x\n",
+           pci->ven_id, pci->dev_id, pci->bus, pci->dev, pci->func);
+
+        sza_printf(sza, "\tChannel Status: %s (raw: 0x%x)\n",
+                cbdma_str_chansts(*((uint64_t *)channel0.status)),
+                (*((uint64_t *)channel0.status) & IOAT_CHANSTS_STATUS));
+
+        sza_printf(sza, "\tCopy Size: %d (0x%x)\n", KTEST_SIZE, KTEST_SIZE);
+        sza_printf(sza, "\tsrcfill: %c (0x%x)\n", ktest.srcfill, ktest.srcfill);
+        sza_printf(sza, "\tdstfill: %c (0x%x)\n", ktest.dstfill, ktest.dstfill);
+        sza_printf(sza, "\tsrc_str (after copy): %s\n", ktest.src);
+        sza_printf(sza, "\tdst_str (after copy): %s\n", ktest.dst);
+
+        return sza;
+}
+
 /* cbdma_reset_device: this fixes any programming errors done before
  */
 void cbdma_reset_device(void)
@@ -951,8 +931,11 @@ static struct chan *cbdmaopen(struct chan *c, int omode)
                 c->synth_buf = open_iommu();
                 break;
 
-        case Qdir:
         case Qcbdmaktest:
+                c->synth_buf = open_ktest();
+                break;
+
+        case Qdir:
         case Qcbdmaucopy:
                 break;
 
@@ -969,10 +952,11 @@ static void cbdmaclose(struct chan *c)
         case Qcbdmastats:
         case Qcbdmareset:
         case Qcbdmaiommu:
+        case Qcbdmaktest:
                 kfree(c->synth_buf);
+                c->synth_buf = NULL;
                 break;
 
-        case Qcbdmaktest:
         case Qdir:
         case Qcbdmaucopy:
                 break;
@@ -986,10 +970,7 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
         struct sized_alloc *sza = c->synth_buf;
 
         switch (c->qid.path) {
-
         case Qcbdmaktest:
-                return cbdma_ktest(c, va, n, offset);
-
         case Qcbdmastats:
         case Qcbdmareset:
         case Qcbdmaiommu:
@@ -997,7 +978,7 @@ static size_t cbdmaread(struct chan *c, void *va, size_t n, off64_t offset) {
 
         case Qcbdmaucopy:
                 return readstr(offset, va, n,
-                        "Write address of struct ucopy to issue DMA.\n");
+                        "Write address of struct ucopy to issue DMA\n");
 
         case Qdir:
                 return devdirread(c, va, n, cbdmadir, ARRAY_SIZE(cbdmadir),
@@ -1045,14 +1026,6 @@ static size_t cbdmawrite(struct chan *c, void *va, size_t n, off64_t offset) {
                 error(EPERM, "writing not permitted");
 
         case Qcbdmaktest:
-                if (offset == 0 && n > 0 && *(char *)va == '1') {
-                        /* TODO: use locks to verify no running test */
-                        ktest.done = false;
-                        ktest.srcfill += 1;
-                } else
-                        error(EINVAL, "cannot be empty string");
-                return n;
-
         case Qcbdmastats:
                 error(EPERM, ERROR_FIXME);
 
@@ -1185,7 +1158,6 @@ void cbdmainit(void) {
         init_channel(&channel0, 0, NDESC);
 
         /* setup ktest struct */
-        ktest.done    = false;
         ktest.srcfill = '1';
         ktest.dstfill = '0';
 }
