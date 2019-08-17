@@ -470,34 +470,17 @@ static void issue_dma_kaddr(struct ucbdma *u)
 static void issue_dma_vaddr(struct ucbdma *u)
 {
 	struct ucbdma *u_kaddr = uptr_to_kptr(u);
+	struct channel *c = &channel0;
 	uint64_t value;
 
 	printk("[kern] IOMMU = ON\n");
-
 	printk("[kern] ucbdma: user: %p kern: %p ndesc: %d\n", u,
 		&u_kaddr->desc, u_kaddr->ndesc);
 
-	/* Set channel completion register where CBDMA will write content of
-	 * CHANSTS register upon successful DMA completion or error condition
-	 */
-	write64((uint64_t) &u->status,
-		get_register(&channel0, IOAT_CHANCMP_OFFSET));
-
-	/* write locate of first desc to register CHAINADDR */
-	write64((uint64_t) &u->desc, mmio + CBDMA_CHAINADDR_OFFSET);
-	wmb_f();
-
-	/* writing valid number of descs: starts the DMA */
-	write16(u_kaddr->ndesc, mmio + CBDMA_DMACOUNT_OFFSET);
-
-	/* wait for completion */
-	while (((u_kaddr->status) & IOAT_CHANSTS_STATUS)
-		== IOAT_CHANSTS_ACTIVE) {
-		cpu_relax();
-		if (cbdma_break_loop)
-			break;
-	}
-
+	/* perform actual DMA */
+	perform_dma(c, (physaddr_t) &u->status, (physaddr_t) &u->desc,
+		    u_kaddr->ndesc);
+	wait_for_dma_completion(&u_kaddr->status);
 	cleanup_post_copy(&channel0);
 }
 
